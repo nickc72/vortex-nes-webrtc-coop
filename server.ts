@@ -187,6 +187,7 @@ async function startServer() {
                   JSON.stringify({
                     type: 'netplay:relay',
                     packet: msg.packet,
+                    chatItem: msg.chatItem,
                   })
                 );
               }

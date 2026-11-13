@@ -20,6 +20,11 @@ import {
   Minimize2,
   ShieldCheck,
   Terminal,
+  PanelRightClose,
+  PanelRightOpen,
+  Download,
+  Flame,
+  MessageSquare,
 } from 'lucide-react';
 import {
   ContraWeaponCode,
@@ -35,7 +40,11 @@ import {
   NES_HEIGHT,
   NES_WIDTH,
 } from './engine/nesCore';
-import { NesNetplayTelemetry, NesWebRtcCoordinator } from './engine/nesNetplay';
+import {
+  ChatMessageItem,
+  NesNetplayTelemetry,
+  NesWebRtcCoordinator,
+} from './engine/nesNetplay';
 import { buildBootable6502NesRomBytes } from './engine/homebrewNesRom';
 import { BUILTIN_CARTRIDGES } from './engine/cartridges';
 import {
@@ -59,17 +68,21 @@ interface PublicRoomInfo {
   createdAt: number;
 }
 
+type ScreenScaleMode = 'FULL_STRETCH' | 'CRT_4_3' | 'PIXEL_NATIVE';
+
 export default function App() {
   const viewportContainerRef = useRef<HTMLDivElement | null>(null);
   const nesCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const demoCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const savInputRef = useRef<HTMLInputElement | null>(null);
 
   const nesCoordinatorRef = useRef<NesWebRtcCoordinator | null>(null);
   const demoEngineRef = useRef<RollbackNetcodeEngine | null>(null);
 
   const keysPressedRef = useRef<Set<string>>(new Set());
   const virtualNesMaskRef = useRef<number>(0);
+  const turboTickRef = useRef<number>(0);
 
   const [coreMode, setCoreMode] = useState<'NES_ROM' | 'BUILTIN_DEMO'>('NES_ROM');
   const [romMeta, setRomMeta] = useState<InesRomMetadata | null>(null);
@@ -79,21 +92,30 @@ export default function App() {
   );
   const [isDraggingRom, setIsDraggingRom] = useState<boolean>(false);
 
-  // Fullscreen & Cheat States
+  // Screen Size, Aspect Scaling, Fullscreen & Cinema Controls
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [cinemaWideMode, setCinemaWideMode] = useState<boolean>(false);
+  const [scaleMode, setScaleMode] = useState<ScreenScaleMode>('FULL_STRETCH');
+
+  // Hardware Cheats & Turbo Fire
   const [lock30Lives, setLock30Lives] = useState<boolean>(false);
+  const [turboFireEnabled, setTurboFireEnabled] = useState<boolean>(true);
+  const [speedMultiplier, setSpeedMultiplier] = useState<1 | 2>(1);
   const [paused, setPaused] = useState<boolean>(false);
   const [muted, setMuted] = useState<boolean>(false);
   const [crtEnabled, setCrtEnabled] = useState<boolean>(true);
   const [rightTab, setRightTab] = useState<'ROM_LOADER' | 'NETPLAY' | 'CONTROLS'>('ROM_LOADER');
 
-  // Quick Save State slot in memory
+  // Save State slot in memory
   const [savedNesState, setSavedNesState] = useState<Record<string, unknown> | null>(null);
 
-  // WebRTC Lobby State
+  // WebRTC Lobby & Tactical Chat State
   const [joinCodeInput, setJoinCodeInput] = useState<string>('');
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [publicRooms, setPublicRooms] = useState<PublicRoomInfo[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessageItem[]>([]);
+  const [chatInput, setChatInput] = useState<string>('');
+  const [liveBannerCallout, setLiveBannerCallout] = useState<ChatMessageItem | null>(null);
 
   const [telemetry, setTelemetry] = useState<NesNetplayTelemetry>({
     engineMode: 'NES_HARDWARE',
@@ -113,17 +135,34 @@ export default function App() {
 
   // Poll Keyboard & HTML5 Gamepad into 8-bit NES Controller 1 and Controller 2 bitmasks
   const pollNesControllers = useCallback((): [number, number] => {
+    turboTickRef.current = (turboTickRef.current + 1) % 60;
+    // 20Hz pulse (on for 2 frames, off for 1 frame) so NES Contra registers maximum rapid-fire shots
+    const turboPulse = turboTickRef.current % 3 !== 0;
+
     const keys = keysPressedRef.current;
     let p1 = virtualNesMaskRef.current;
     let p2 = 0;
 
-    // Player 1 Keyboard: WASD + J/Z/F (B = Fire) + K/X/Space (A = Jump) + Shift (Select) + Enter (Start)
     if (keys.has('KeyW')) p1 |= NES_BTN_UP;
     if (keys.has('KeyS')) p1 |= NES_BTN_DOWN;
     if (keys.has('KeyA')) p1 |= NES_BTN_LEFT;
     if (keys.has('KeyD')) p1 |= NES_BTN_RIGHT;
-    if (keys.has('KeyJ') || keys.has('KeyZ') || keys.has('KeyF')) p1 |= NES_BTN_B;
+
+    // B Button (Fire): J / Z / F (uses Turbo pulse if turboFireEnabled is ON, or dedicated KeyU for Turbo B)
+    const holdFireP1 = keys.has('KeyJ') || keys.has('KeyZ') || keys.has('KeyF');
+    if (holdFireP1) {
+      if (!turboFireEnabled || turboPulse) {
+        p1 |= NES_BTN_B;
+      }
+    }
+    if (keys.has('KeyU') && turboPulse) {
+      p1 |= NES_BTN_B;
+    }
+
+    // A Button (Jump): K / X / Space (or KeyI for Turbo Jump)
     if (keys.has('KeyK') || keys.has('KeyX') || keys.has('Space')) p1 |= NES_BTN_A;
+    if (keys.has('KeyI') && turboPulse) p1 |= NES_BTN_A;
+
     if (keys.has('ShiftLeft') || keys.has('ShiftRight')) {
       p1 |= NES_BTN_SELECT;
     }
@@ -142,7 +181,11 @@ export default function App() {
       if (keys.has('ArrowDown')) p2 |= NES_BTN_DOWN;
       if (keys.has('ArrowLeft')) p2 |= NES_BTN_LEFT;
       if (keys.has('ArrowRight')) p2 |= NES_BTN_RIGHT;
-      if (keys.has('KeyN') || keys.has('Comma') || keys.has('Numpad1')) p2 |= NES_BTN_B;
+      if (keys.has('KeyN') || keys.has('Comma') || keys.has('Numpad1')) {
+        if (!turboFireEnabled || turboPulse) {
+          p2 |= NES_BTN_B;
+        }
+      }
       if (keys.has('KeyM') || keys.has('Period') || keys.has('Numpad2')) p2 |= NES_BTN_A;
       if (keys.has('BracketLeft')) p2 |= NES_BTN_SELECT;
       if (keys.has('BracketRight')) p2 |= NES_BTN_START;
@@ -162,7 +205,9 @@ export default function App() {
         if (axX > 0.4 || pad.buttons[15]?.pressed) m |= NES_BTN_RIGHT;
         if (pad.buttons[0]?.pressed || pad.buttons[1]?.pressed) m |= NES_BTN_A;
         if (pad.buttons[2]?.pressed || pad.buttons[3]?.pressed || pad.buttons[7]?.pressed) {
-          m |= NES_BTN_B;
+          if (!turboFireEnabled || turboPulse) {
+            m |= NES_BTN_B;
+          }
         }
         if (pad.buttons[8]?.pressed) m |= NES_BTN_SELECT;
         if (pad.buttons[9]?.pressed) m |= NES_BTN_START;
@@ -173,9 +218,9 @@ export default function App() {
     }
 
     return [p1, p2];
-  }, []);
+  }, [turboFireEnabled]);
 
-  // Toggle Fullscreen (Works both via Native Fullscreen API and CSS Full-Window Theater Mode inside iframes)
+  // Toggle Fullscreen (Works both via Native Fullscreen API and Edge-to-Edge CSS Fullscreen inside iframes)
   const toggleFullscreen = useCallback(async () => {
     const nextState = !isFullscreen;
     setIsFullscreen(nextState);
@@ -189,14 +234,13 @@ export default function App() {
         await document.exitFullscreen();
       }
     } catch {
-      // Fallback to CSS Full-Window mode automatically (isFullscreen state already toggled)
+      // Fallback to Edge-to-Edge CSS Full-Window mode automatically
     }
   }, [isFullscreen]);
 
   useEffect(() => {
     const onFsChange = () => {
       if (!document.fullscreenElement && isFullscreen) {
-        // Keep state synced when user presses Esc in native fullscreen
         setIsFullscreen(false);
       }
     };
@@ -217,6 +261,13 @@ export default function App() {
       },
       onStatusToast: (msg) => {
         setStatusToast(msg);
+      },
+      onChatReceived: (item) => {
+        setChatMessages((prev) => [...prev.slice(-24), item]);
+        setLiveBannerCallout(item);
+        setTimeout(() => {
+          setLiveBannerCallout((curr) => (curr?.id === item.id ? null : curr));
+        }, 4000);
       },
     });
     nesCoordinatorRef.current = coordinator;
@@ -280,12 +331,12 @@ export default function App() {
     };
   }, []);
 
-  // 60Hz Fixed-Timestep Emulator Loop
+  // 60Hz Fixed-Timestep Emulator Loop (Supports 1x Normal 60fps & 2x Fast-Forward)
   useEffect(() => {
     let animId = 0;
     let lastTime = performance.now();
     let accumulator = 0;
-    const STEP_MS = 1000 / 60.0988;
+    const STEP_MS = 1000 / (60.0988 * speedMultiplier);
     let framesRendered = 0;
     let fpsTimer = performance.now();
 
@@ -296,7 +347,8 @@ export default function App() {
       if (!paused) {
         accumulator += delta;
         let subSteps = 0;
-        while (accumulator >= STEP_MS && subSteps < 3) {
+        const maxSteps = speedMultiplier === 2 ? 6 : 3;
+        while (accumulator >= STEP_MS && subSteps < maxSteps) {
           if (coreMode === 'NES_ROM' && nesCoordinatorRef.current) {
             const [p1, p2] = pollNesControllers();
             nesCoordinatorRef.current.tickNesFrame(p1, p2);
@@ -350,7 +402,7 @@ export default function App() {
 
     animId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animId);
-  }, [paused, coreMode, pollNesControllers]);
+  }, [paused, coreMode, speedMultiplier, pollNesControllers]);
 
   // Poll open rooms list
   const refreshRooms = useCallback(async () => {
@@ -384,7 +436,7 @@ export default function App() {
       setCoreMode('NES_ROM');
       setPaused(false);
       setStatusToast(
-        `Loaded "${meta.fileName}" (${meta.mapperName}). Press Enter (Start) to begin, then click "30 Lives Cheat" anytime!`
+        `Loaded "${meta.fileName}" (${meta.mapperName}). Press Enter (Start) to begin, then click "Give 30 Lives" anytime!`
       );
     } catch (err) {
       setRomError(
@@ -411,9 +463,6 @@ export default function App() {
     }
   };
 
-  /**
-   * Give 30 Lives Directly in 6502 RAM (Does NOT press Start or pause the game!)
-   */
   const handleGive30Lives = (toggleLock: boolean) => {
     if (!nesCoordinatorRef.current) return;
     nesCoordinatorRef.current.nesCore.audio.start();
@@ -433,9 +482,6 @@ export default function App() {
     );
   };
 
-  /**
-   * Equip Spread Gun / Laser / Rapid Fire directly in Contra 6502 RAM ($00AA / $00AB)
-   */
   const handleInjectContraWeapon = (weapon: ContraWeaponCode) => {
     if (coreMode === 'NES_ROM' && nesCoordinatorRef.current) {
       nesCoordinatorRef.current.nesCore.injectContraWeapon(weapon);
@@ -476,6 +522,37 @@ export default function App() {
     setStatusToast('Restored saved NES state!');
   };
 
+  const handleExportSaveFile = () => {
+    if (!nesCoordinatorRef.current) return;
+    const snap = nesCoordinatorRef.current.nesCore.saveStateSnapshot();
+    if (!snap) return;
+    const blob = new Blob([JSON.stringify(snap)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${romMeta?.fileName || 'contra'}.vortex.sav`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setStatusToast('Exported .vortex.sav save-state file to your computer!');
+  };
+
+  const handleImportSaveFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !nesCoordinatorRef.current) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      nesCoordinatorRef.current.nesCore.loadStateSnapshot(parsed);
+      setSavedNesState(parsed);
+      if (nesCoordinatorRef.current.telemetry.peerConnected) {
+        nesCoordinatorRef.current.syncExactSaveStateToPeer();
+      }
+      setStatusToast(`Loaded save file "${file.name}" and synced state!`);
+    } catch {
+      setRomError('Invalid .sav file format.');
+    }
+  };
+
   const handleToggleMute = () => {
     const nextMuted = !muted;
     if (nesCoordinatorRef.current) {
@@ -497,6 +574,7 @@ export default function App() {
 
   const handleHostRoom = () => {
     setRightTab('NETPLAY');
+    setCinemaWideMode(false);
     nesCoordinatorRef.current?.connectRoom('CREATE');
   };
 
@@ -511,6 +589,12 @@ export default function App() {
     navigator.clipboard.writeText(telemetry.roomCode);
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2000);
+  };
+
+  const handleSendCallout = (text: string) => {
+    if (!text.trim()) return;
+    nesCoordinatorRef.current?.sendChatOrCallout(text.trim());
+    setChatInput('');
   };
 
   const pulseVirtualButton = (bit: number, holdMs = 120) => {
@@ -530,14 +614,32 @@ export default function App() {
     }
   };
 
+  // Compute CSS classes for the <canvas> based on chosen ScreenScaleMode
+  const getNesCanvasScaleClass = () => {
+    if (scaleMode === 'FULL_STRETCH') {
+      return 'w-full h-full object-fill';
+    }
+    if (scaleMode === 'CRT_4_3') {
+      return 'h-full w-auto aspect-[4/3] max-w-full object-fill';
+    }
+    return 'h-full w-auto aspect-[16/15] max-w-full object-contain';
+  };
+
   return (
     <div className="min-h-screen bg-[#0B0F17] text-[#F1F5F9] font-sans flex flex-col">
-      {/* Hidden File Input for .nes ROM Upload */}
+      {/* Hidden File Inputs for .nes ROM & .sav Save State */}
       <input
         ref={fileInputRef}
         type="file"
         accept=".nes,application/octet-stream"
         onChange={handleFileInputChange}
+        className="hidden"
+      />
+      <input
+        ref={savInputRef}
+        type="file"
+        accept=".sav,.json"
+        onChange={handleImportSaveFile}
         className="hidden"
       />
 
@@ -555,21 +657,30 @@ export default function App() {
         <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-[#94A3B8]">
           <a
             href="#emulator-deck"
-            onClick={() => setRightTab('ROM_LOADER')}
+            onClick={() => {
+              setCinemaWideMode(false);
+              setRightTab('ROM_LOADER');
+            }}
             className="hover:text-[#F1F5F9] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
           >
             Upload .NES ROM
           </a>
           <a
             href="#emulator-deck"
-            onClick={() => setRightTab('NETPLAY')}
+            onClick={() => {
+              setCinemaWideMode(false);
+              setRightTab('NETPLAY');
+            }}
             className="hover:text-[#F1F5F9] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
           >
             WebRTC Co-Op Lobby
           </a>
           <a
             href="#emulator-deck"
-            onClick={() => setRightTab('CONTROLS')}
+            onClick={() => {
+              setCinemaWideMode(false);
+              setRightTab('CONTROLS');
+            }}
             className="hover:text-[#F1F5F9] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
           >
             Controller Mapping
@@ -594,8 +705,8 @@ export default function App() {
       </header>
 
       {/* Main 1440px Workstation Container */}
-      <main className="flex-1 max-w-[1440px] w-full mx-auto px-6 py-6 space-y-6">
-        {/* Top Banner: Prominent Drag-and-Drop .NES Loader + Non-Pausing 30-Lives & Weapon Cheats */}
+      <main className="flex-1 max-w-[1440px] w-full mx-auto px-6 py-5 space-y-6">
+        {/* Top Banner: Prominent Drag-and-Drop .NES Loader + Non-Pausing 30-Lives & Fullscreen Controls */}
         <div
           onDragOver={(e) => {
             e.preventDefault();
@@ -603,7 +714,7 @@ export default function App() {
           }}
           onDragLeave={() => setIsDraggingRom(false)}
           onDrop={handleDropRom}
-          className={`rounded-xl border-2 border-dashed p-5 transition-colors flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
+          className={`rounded-xl border-2 border-dashed p-4 transition-colors flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
             isDraggingRom
               ? 'border-[#F59E0B] bg-[#F59E0B]/10'
               : 'border-[#263248] bg-[#151C28]'
@@ -613,7 +724,7 @@ export default function App() {
             <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-[#94A3B8]">
               <span>REAL 6502 CPU + 2C02 PPU + 2A03 APU</span>
               <span aria-hidden="true">·</span>
-              <span>DIRECT 6502 RAM 30-LIVES INJECTOR</span>
+              <span>TURBO AUTO-FIRE: {turboFireEnabled ? 'ACTIVE' : 'OFF'}</span>
               <span aria-hidden="true">·</span>
               <span>AUTO P2P ROM TRANSFER</span>
             </div>
@@ -653,7 +764,6 @@ export default function App() {
                   ? 'bg-[#10B981] text-[#0B0F17]'
                   : 'bg-[#1E293B] border border-[#10B981]/50 text-[#10B981] hover:bg-[#10B981]/15'
               }`}
-              title="Locks Player 1 & Player 2 Lives at 30 in NES RAM every frame"
             >
               <ShieldCheck className="w-3.5 h-3.5" />
               Infinite 30 Lives: {lock30Lives ? 'ON' : 'OFF'}
@@ -661,95 +771,132 @@ export default function App() {
 
             <button
               onClick={toggleFullscreen}
-              className="flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9] border border-[#475569] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold bg-[#38BDF8] text-[#0B0F17] hover:bg-[#7DD3FC] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <Maximize2 className="w-3.5 h-3.5 text-[#F59E0B]" />
-              Fullscreen
+              <Maximize2 className="w-3.5 h-3.5" />
+              Max Fullscreen
             </button>
           </div>
         </div>
 
-        {/* Main 12-Column Split: 8-Col NES CRT Screen + 4-Col ROM/WebRTC Deck */}
+        {/* Main Split: 12-Col Full Cinema Width OR 8-Col + 4-Col Split */}
         <section
           id="emulator-deck"
           className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch"
         >
-          {/* Left 8 Columns (or Full-Window Overlay when isFullscreen=true) */}
+          {/* Gameplay Deck Container (In Fullscreen Mode: fixed inset-0 z-50 w-screen h-screen edge-to-edge!) */}
           <div
             ref={viewportContainerRef}
             className={
               isFullscreen
-                ? 'fixed inset-0 z-50 bg-[#05070B] p-4 flex flex-col justify-between'
-                : 'lg:col-span-8 flex flex-col justify-between bg-[#151C28] border border-[#263248] rounded-xl p-4 space-y-4'
+                ? 'fixed inset-0 z-50 bg-black flex flex-col justify-between overflow-hidden'
+                : `${
+                    cinemaWideMode ? 'lg:col-span-12' : 'lg:col-span-8'
+                  } flex flex-col justify-between bg-[#151C28] border border-[#263248] rounded-xl p-4 space-y-3`
             }
           >
-            {/* Top Bar Above Screen: Core Switch + Direct Contra Weapon RAM Injectors + Fullscreen Toggle */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#263248]">
-              <div className="flex items-center gap-1 p-1 bg-[#0B0F17] rounded-lg border border-[#263248]">
-                <button
-                  onClick={() => setCoreMode('NES_ROM')}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    coreMode === 'NES_ROM'
-                      ? 'bg-[#F59E0B] text-[#0B0F17]'
-                      : 'text-[#94A3B8] hover:text-[#F1F5F9]'
-                  }`}
-                >
-                  Real .NES Hardware Core (256×240)
-                </button>
-                <button
-                  onClick={() => setCoreMode('BUILTIN_DEMO')}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    coreMode === 'BUILTIN_DEMO'
-                      ? 'bg-[#38BDF8] text-[#0B0F17]'
-                      : 'text-[#94A3B8] hover:text-[#F1F5F9]'
-                  }`}
-                >
-                  Built-In Run &amp; Gun Demo
-                </button>
-              </div>
+            {/* Top Bar Above Screen (Hidden in Fullscreen in favor of a sleek floating overlay so canvas gets 100% height!) */}
+            {!isFullscreen && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#263248]">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Core Switcher */}
+                  <div className="flex items-center gap-1 p-1 bg-[#0B0F17] rounded-lg border border-[#263248]">
+                    <button
+                      onClick={() => setCoreMode('NES_ROM')}
+                      className={`px-2.5 py-1 text-xs font-semibold rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                        coreMode === 'NES_ROM'
+                          ? 'bg-[#F59E0B] text-[#0B0F17]'
+                          : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                      }`}
+                    >
+                      Real .NES Core
+                    </button>
+                    <button
+                      onClick={() => setCoreMode('BUILTIN_DEMO')}
+                      className={`px-2.5 py-1 text-xs font-semibold rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                        coreMode === 'BUILTIN_DEMO'
+                          ? 'bg-[#38BDF8] text-[#0B0F17]'
+                          : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                      }`}
+                    >
+                      Built-In Demo
+                    </button>
+                  </div>
 
-              {/* Direct Contra Weapon RAM Buttons */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] text-[#94A3B8] font-mono mr-1">
-                  Contra RAM Gun:
-                </span>
-                {(
-                  [
-                    { code: 'S', label: '[S] Spread' },
-                    { code: 'L', label: '[L] Laser' },
-                    { code: 'M', label: '[M] Machine' },
-                    { code: 'F', label: '[F] Flame' },
-                  ] as const
-                ).map((w) => (
+                  {/* Screen Aspect / Scaling Selector to make gameplay as huge as desired */}
+                  <div className="flex items-center gap-1 p-1 bg-[#0B0F17] rounded-lg border border-[#263248]">
+                    {(
+                      [
+                        { id: 'FULL_STRETCH', label: '16:9 Max Fill' },
+                        { id: 'CRT_4_3', label: '4:3 CRT TV' },
+                        { id: 'PIXEL_NATIVE', label: 'Pixel 16:15' },
+                      ] as const
+                    ).map((sc) => (
+                      <button
+                        key={sc.id}
+                        onClick={() => setScaleMode(sc.id)}
+                        className={`px-2.5 py-1 text-xs font-semibold rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          scaleMode === sc.id
+                            ? 'bg-[#1E293B] text-[#38BDF8]'
+                            : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                        }`}
+                      >
+                        {sc.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Direct Contra Weapon RAM Buttons + Cinema Expand + Fullscreen */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-[#94A3B8] font-mono">RAM Gun:</span>
+                  {(
+                    [
+                      { code: 'S', label: '[S] Spread' },
+                      { code: 'L', label: '[L] Laser' },
+                      { code: 'M', label: '[M] Machine' },
+                      { code: 'F', label: '[F] Flame' },
+                    ] as const
+                  ).map((w) => (
+                    <button
+                      key={w.code}
+                      onClick={() => handleInjectContraWeapon(w.code)}
+                      className="px-2 py-1 text-xs font-mono font-semibold rounded bg-[#0B0F17] border border-[#263248] text-[#E2E8F0] hover:border-[#F59E0B] hover:text-[#F59E0B] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      {w.label}
+                    </button>
+                  ))}
+
                   <button
-                    key={w.code}
-                    onClick={() => handleInjectContraWeapon(w.code)}
-                    className="px-2.5 py-1 text-xs font-mono font-semibold rounded bg-[#0B0F17] border border-[#263248] text-[#E2E8F0] hover:border-[#F59E0B] hover:text-[#F59E0B] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    onClick={() => setCinemaWideMode((w) => !w)}
+                    className="hidden lg:flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded bg-[#1E293B] text-[#E2E8F0] hover:bg-[#334155] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    title="Expand gameplay window across full 12-column width"
                   >
-                    {w.label}
+                    {cinemaWideMode ? (
+                      <>
+                        <PanelRightOpen className="w-3.5 h-3.5 text-[#38BDF8]" />
+                        Show Sidebar
+                      </>
+                    ) : (
+                      <>
+                        <PanelRightClose className="w-3.5 h-3.5 text-[#38BDF8]" />
+                        Wide Cinema
+                      </>
+                    )}
                   </button>
-                ))}
 
-                <button
-                  onClick={toggleFullscreen}
-                  className="ml-1 flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded bg-[#F59E0B] text-[#0B0F17] hover:bg-[#FBBF24] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  {isFullscreen ? (
-                    <>
-                      <Minimize2 className="w-3.5 h-3.5" />
-                      Exit Fullscreen (Esc)
-                    </>
-                  ) : (
-                    <>
-                      <Maximize2 className="w-3.5 h-3.5" />
-                      Fullscreen
-                    </>
-                  )}
-                </button>
+                  <button
+                    onClick={toggleFullscreen}
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded bg-[#F59E0B] text-[#0B0F17] hover:bg-[#FBBF24] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Maximize2 className="w-3.5 h-3.5" />
+                    Fullscreen
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* NES Viewport Container (Double-click also toggles Fullscreen!) */}
+            {/* NES Viewport Container — Edge-to-Edge 100vw x 100vh in Fullscreen, Tall & Wide in Normal/Cinema Mode */}
             <div
               onDoubleClick={toggleFullscreen}
               onDragOver={(e) => {
@@ -758,16 +905,20 @@ export default function App() {
               }}
               onDragLeave={() => setIsDraggingRom(false)}
               onDrop={handleDropRom}
-              className={`relative w-full bg-[#05070B] rounded-lg overflow-hidden border border-[#263248] flex items-center justify-center ${
-                isFullscreen ? 'flex-1 my-2' : 'aspect-[16/11]'
+              className={`relative w-full bg-[#05070B] overflow-hidden flex items-center justify-center ${
+                isFullscreen
+                  ? 'w-screen h-screen flex-1 rounded-none border-0'
+                  : cinemaWideMode
+                  ? 'h-[68vh] min-h-[520px] rounded-lg border border-[#263248]'
+                  : 'h-[58vh] min-h-[440px] rounded-lg border border-[#263248]'
               }`}
             >
-              {/* Real 256x240 NES Hardware Canvas */}
+              {/* Real 256x240 NES Hardware Canvas Scaled Up */}
               <canvas
                 ref={nesCanvasRef}
                 width={NES_WIDTH}
                 height={NES_HEIGHT}
-                className={`h-full w-auto aspect-[16/15] object-contain pixelated ${
+                className={`${getNesCanvasScaleClass()} pixelated ${
                   coreMode === 'NES_ROM' ? 'block' : 'hidden'
                 }`}
               />
@@ -777,13 +928,72 @@ export default function App() {
                 ref={demoCanvasRef}
                 width={INTERNAL_WIDTH}
                 height={INTERNAL_HEIGHT}
-                className={`w-full h-full object-contain pixelated ${
+                className={`w-full h-full object-fill pixelated ${
                   coreMode === 'BUILTIN_DEMO' ? 'block' : 'hidden'
                 }`}
               />
 
               {crtEnabled && (
-                <div className="pointer-events-none absolute inset-0 crt-scanlines opacity-70" />
+                <div className="pointer-events-none absolute inset-0 crt-scanlines opacity-65" />
+              )}
+
+              {/* Floating Ultra-Compact HUD Pill when in Fullscreen Mode (So the canvas gets 100% of the screen!) */}
+              {isFullscreen && (
+                <div className="absolute top-3 right-3 z-50 flex flex-wrap items-center gap-1.5 bg-[#0B0F17]/80 hover:bg-[#0B0F17] border border-[#263248] px-3 py-1.5 rounded-lg opacity-45 hover:opacity-100 transition-opacity">
+                  {(
+                    [
+                      { id: 'FULL_STRETCH', label: '16:9 Fill' },
+                      { id: 'CRT_4_3', label: '4:3 CRT' },
+                      { id: 'PIXEL_NATIVE', label: 'Pixel' },
+                    ] as const
+                  ).map((sc) => (
+                    <button
+                      key={sc.id}
+                      onClick={() => setScaleMode(sc.id)}
+                      className={`px-2 py-1 text-xs font-mono rounded cursor-pointer ${
+                        scaleMode === sc.id
+                          ? 'bg-[#38BDF8] text-[#0B0F17] font-bold'
+                          : 'text-[#E2E8F0] hover:bg-[#1E293B]'
+                      }`}
+                    >
+                      {sc.label}
+                    </button>
+                  ))}
+
+                  <button
+                    onClick={() => handleGive30Lives(false)}
+                    className="px-2.5 py-1 text-xs font-mono font-semibold bg-[#10B981] text-[#0B0F17] rounded cursor-pointer"
+                  >
+                    +30 Lives
+                  </button>
+
+                  <button
+                    onClick={() => handleInjectContraWeapon('S')}
+                    className="px-2.5 py-1 text-xs font-mono font-semibold bg-[#F59E0B] text-[#0B0F17] rounded cursor-pointer"
+                  >
+                    [S] Spread
+                  </button>
+
+                  <button
+                    onClick={toggleFullscreen}
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold bg-[#F43F5E] text-white rounded cursor-pointer"
+                  >
+                    <Minimize2 className="w-3.5 h-3.5" />
+                    Exit (Esc)
+                  </button>
+                </div>
+              )}
+
+              {/* Live P2P Tactical Callout Toast Inside Viewport */}
+              {liveBannerCallout && (
+                <div className="absolute top-3 left-3 z-40 bg-[#0B0F17]/90 border border-[#38BDF8] px-3.5 py-2 rounded-lg flex items-center gap-2">
+                  <span className="text-xs font-mono font-bold text-[#38BDF8]">
+                    [{liveBannerCallout.sender}]
+                  </span>
+                  <span className="text-xs font-semibold text-[#F1F5F9]">
+                    {liveBannerCallout.text}
+                  </span>
+                </div>
               )}
 
               {/* Helpful overlay prompt when still running the tiny 6502 test ROM */}
@@ -791,8 +1001,8 @@ export default function App() {
                 romMeta?.fileName === 'VORTEX_6502_TEST_DUAL_PAD.nes' && (
                   <div className="absolute bottom-3 left-3 right-3 bg-[#0B0F17]/90 border border-[#F59E0B]/50 rounded-lg px-4 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="text-xs text-[#E2E8F0]">
-                      <strong className="text-[#F59E0B]">6502 CPU Active:</strong> Currently
-                      running the built-in 6502 dual-controller test ROM. Drop your{' '}
+                      <strong className="text-[#F59E0B]">6502 CPU Active:</strong> Running the
+                      built-in 6502 dual-controller test ROM. Drop your{' '}
                       <code className="font-mono text-[#38BDF8]">Contra.nes</code> file here to
                       boot real Contra!
                     </div>
@@ -806,452 +1016,542 @@ export default function App() {
                 )}
             </div>
 
-            {/* Hardware Deck & Quick NES Controller Buttons */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => setPaused((p) => !p)}
-                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9] whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  {paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
-                  {paused ? 'Resume' : 'Pause'}
-                </button>
+            {/* Bottom Hardware Deck Toolbar (Hidden in Fullscreen so canvas fills 100vh) */}
+            {!isFullscreen && (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      onClick={() => setPaused((p) => !p)}
+                      className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9] whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      {paused ? (
+                        <Play className="w-3.5 h-3.5" />
+                      ) : (
+                        <Pause className="w-3.5 h-3.5" />
+                      )}
+                      {paused ? 'Resume' : 'Pause'}
+                    </button>
 
-                <button
-                  onClick={handleResetConsole}
-                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9] whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  Reset NES
-                </button>
+                    <button
+                      onClick={handleResetConsole}
+                      className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9] whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      Reset NES
+                    </button>
 
-                <button
-                  onClick={() => handleGive30Lives(false)}
-                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#38BDF8]/20 border border-[#38BDF8]/50 text-[#38BDF8] hover:bg-[#38BDF8]/30 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  +30 Lives
-                </button>
+                    <button
+                      onClick={() => setTurboFireEnabled((t) => !t)}
+                      className={`flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap shrink-0 cursor-pointer ${
+                        turboFireEnabled
+                          ? 'bg-[#F43F5E]/20 border border-[#F43F5E]/50 text-[#F43F5E]'
+                          : 'bg-[#1E293B] text-[#94A3B8]'
+                      }`}
+                      title="Automatically rapid-fires when holding down the Shoot button (J/Z/F)"
+                    >
+                      <Flame className="w-3.5 h-3.5" />
+                      Turbo Fire: {turboFireEnabled ? 'ON' : 'OFF'}
+                    </button>
 
-                <button
-                  onClick={handleQuickSave}
-                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#38BDF8] whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  Save State
-                </button>
+                    <button
+                      onClick={() => setSpeedMultiplier((s) => (s === 1 ? 2 : 1))}
+                      className={`px-2.5 py-1.5 text-xs font-mono font-semibold rounded-lg whitespace-nowrap shrink-0 cursor-pointer ${
+                        speedMultiplier === 2
+                          ? 'bg-[#F59E0B] text-[#0B0F17]'
+                          : 'bg-[#1E293B] text-[#94A3B8]'
+                      }`}
+                    >
+                      Speed: {speedMultiplier}x
+                    </button>
 
-                <button
-                  onClick={handleQuickLoad}
-                  disabled={!savedNesState}
-                  className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg whitespace-nowrap shrink-0 ${
-                    savedNesState
-                      ? 'bg-[#1E293B] hover:bg-[#334155] text-[#10B981] cursor-pointer'
-                      : 'bg-[#0B0F17] text-[#475569] cursor-not-allowed'
-                  }`}
-                >
-                  <FolderOpen className="w-3.5 h-3.5" />
-                  Load State
-                </button>
+                    <button
+                      onClick={handleQuickSave}
+                      className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#38BDF8] whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      Save
+                    </button>
 
-                <button
-                  onClick={() => setCrtEnabled((c) => !c)}
-                  className={`px-3 py-2 text-xs font-semibold rounded-lg whitespace-nowrap shrink-0 cursor-pointer ${
-                    crtEnabled
-                      ? 'bg-[#F59E0B]/20 text-[#F59E0B] border border-[#F59E0B]/40'
-                      : 'bg-[#1E293B] text-[#94A3B8]'
-                  }`}
-                >
-                  CRT: {crtEnabled ? 'On' : 'Off'}
-                </button>
+                    <button
+                      onClick={handleQuickLoad}
+                      disabled={!savedNesState}
+                      className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap shrink-0 ${
+                        savedNesState
+                          ? 'bg-[#1E293B] hover:bg-[#334155] text-[#10B981] cursor-pointer'
+                          : 'bg-[#0B0F17] text-[#475569] cursor-not-allowed'
+                      }`}
+                    >
+                      <FolderOpen className="w-3.5 h-3.5" />
+                      Load
+                    </button>
 
-                <button
-                  onClick={handleToggleMute}
-                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9] whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  {muted ? (
-                    <VolumeX className="w-3.5 h-3.5 text-[#F43F5E]" />
-                  ) : (
-                    <Volume2 className="w-3.5 h-3.5 text-[#10B981]" />
-                  )}
-                  {muted ? 'Muted' : '2A03 Audio'}
-                </button>
-              </div>
+                    <button
+                      onClick={handleExportSaveFile}
+                      className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#E2E8F0] whitespace-nowrap shrink-0 cursor-pointer"
+                      title="Download .vortex.sav save state to disk"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      .SAV
+                    </button>
 
-              {/* Interactive On-Screen NES Pad (Select 2-Players / Start / B / A) */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  onClick={() => pulseVirtualButton(NES_BTN_SELECT, 150)}
-                  className="px-3 py-1.5 text-xs font-mono font-semibold bg-[#0B0F17] border border-[#475569] rounded hover:border-[#F59E0B] text-[#E2E8F0] cursor-pointer"
-                  title="Press SELECT (switches between 1 PLAYER and 2 PLAYERS on Contra title screen)"
-                >
-                  SELECT (Shift)
-                </button>
-                <button
-                  onClick={() => pulseVirtualButton(NES_BTN_START, 150)}
-                  className="px-3 py-1.5 text-xs font-mono font-semibold bg-[#F59E0B]/20 border border-[#F59E0B] rounded text-[#F59E0B] hover:bg-[#F59E0B]/30 cursor-pointer"
-                  title="Press START (Enter)"
-                >
-                  START (Enter)
-                </button>
-                <button
-                  onMouseDown={() => setVirtualBit(NES_BTN_B, true)}
-                  onMouseUp={() => setVirtualBit(NES_BTN_B, false)}
-                  onMouseLeave={() => setVirtualBit(NES_BTN_B, false)}
-                  className="px-3 py-1.5 text-xs font-mono font-bold bg-[#F43F5E]/20 border border-[#F43F5E] rounded text-[#F43F5E] select-none cursor-pointer"
-                >
-                  B · FIRE (J/Z)
-                </button>
-                <button
-                  onMouseDown={() => setVirtualBit(NES_BTN_A, true)}
-                  onMouseUp={() => setVirtualBit(NES_BTN_A, false)}
-                  onMouseLeave={() => setVirtualBit(NES_BTN_A, false)}
-                  className="px-3 py-1.5 text-xs font-mono font-bold bg-[#38BDF8]/20 border border-[#38BDF8] rounded text-[#38BDF8] select-none cursor-pointer"
-                >
-                  A · JUMP (K/X)
-                </button>
-              </div>
-            </div>
+                    <button
+                      onClick={() => setCrtEnabled((c) => !c)}
+                      className={`px-2.5 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap shrink-0 cursor-pointer ${
+                        crtEnabled
+                          ? 'bg-[#F59E0B]/20 text-[#F59E0B] border border-[#F59E0B]/40'
+                          : 'bg-[#1E293B] text-[#94A3B8]'
+                      }`}
+                    >
+                      CRT: {crtEnabled ? 'On' : 'Off'}
+                    </button>
 
-            {/* Control Binding Footer */}
-            <div className="pt-2 border-t border-[#263248] flex flex-wrap items-center justify-between gap-2 text-xs text-[#94A3B8]">
-              <div>
-                <strong className="text-[#E2E8F0]">Controller 1:</strong> D-Pad:{' '}
-                <code className="font-mono text-[#38BDF8]">WASD</code> · B (Shoot):{' '}
-                <code className="font-mono text-[#38BDF8]">J / Z / F</code> · A (Jump):{' '}
-                <code className="font-mono text-[#38BDF8]">K / X / Space</code> · Select:{' '}
-                <code className="font-mono text-[#38BDF8]">Shift</code> · Start:{' '}
-                <code className="font-mono text-[#38BDF8]">Enter</code>
-              </div>
-              <div>
-                <strong className="text-[#E2E8F0]">Controller 2 (Local):</strong>{' '}
-                <code className="font-mono text-[#F43F5E]">Arrows + N (B) + M (A)</code>
-              </div>
-            </div>
+                    <button
+                      onClick={handleToggleMute}
+                      className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9] whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      {muted ? (
+                        <VolumeX className="w-3.5 h-3.5 text-[#F43F5E]" />
+                      ) : (
+                        <Volume2 className="w-3.5 h-3.5 text-[#10B981]" />
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Interactive On-Screen NES Pad (Select 2-Players / Start / B / A) */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      onClick={() => pulseVirtualButton(NES_BTN_SELECT, 150)}
+                      className="px-2.5 py-1.5 text-xs font-mono font-semibold bg-[#0B0F17] border border-[#475569] rounded hover:border-[#F59E0B] text-[#E2E8F0] cursor-pointer"
+                    >
+                      SELECT (Shift)
+                    </button>
+                    <button
+                      onClick={() => pulseVirtualButton(NES_BTN_START, 150)}
+                      className="px-2.5 py-1.5 text-xs font-mono font-semibold bg-[#F59E0B]/20 border border-[#F59E0B] rounded text-[#F59E0B] hover:bg-[#F59E0B]/30 cursor-pointer"
+                    >
+                      START (Enter)
+                    </button>
+                    <button
+                      onMouseDown={() => setVirtualBit(NES_BTN_B, true)}
+                      onMouseUp={() => setVirtualBit(NES_BTN_B, false)}
+                      onMouseLeave={() => setVirtualBit(NES_BTN_B, false)}
+                      className="px-2.5 py-1.5 text-xs font-mono font-bold bg-[#F43F5E]/20 border border-[#F43F5E] rounded text-[#F43F5E] select-none cursor-pointer"
+                    >
+                      B · FIRE (J/Z)
+                    </button>
+                    <button
+                      onMouseDown={() => setVirtualBit(NES_BTN_A, true)}
+                      onMouseUp={() => setVirtualBit(NES_BTN_A, false)}
+                      onMouseLeave={() => setVirtualBit(NES_BTN_A, false)}
+                      className="px-2.5 py-1.5 text-xs font-mono font-bold bg-[#38BDF8]/20 border border-[#38BDF8] rounded text-[#38BDF8] select-none cursor-pointer"
+                    >
+                      A · JUMP (K/X)
+                    </button>
+                  </div>
+                </div>
+
+                {/* Control Binding Footer */}
+                <div className="pt-2 border-t border-[#263248] flex flex-wrap items-center justify-between gap-2 text-xs text-[#94A3B8]">
+                  <div>
+                    <strong className="text-[#E2E8F0]">Controller 1:</strong> D-Pad:{' '}
+                    <code className="font-mono text-[#38BDF8]">WASD</code> · B (Turbo Shoot):{' '}
+                    <code className="font-mono text-[#38BDF8]">J / Z / F</code> · A (Jump):{' '}
+                    <code className="font-mono text-[#38BDF8]">K / X / Space</code> · Select:{' '}
+                    <code className="font-mono text-[#38BDF8]">Shift</code> · Start:{' '}
+                    <code className="font-mono text-[#38BDF8]">Enter</code>
+                  </div>
+                  <div>
+                    <strong className="text-[#E2E8F0]">Screen Tip:</strong> Double-click screen for
+                    100% Edge-to-Edge Fullscreen
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
-          {/* Right 4 Columns: .NES ROM Inspector & WebRTC P2P Co-Op Room Deck */}
-          <aside className="lg:col-span-4 bg-[#151C28] border border-[#263248] rounded-xl p-5 flex flex-col justify-between space-y-5">
-            <div className="space-y-4">
-              {/* 3 Functional Tabs */}
-              <div className="grid grid-cols-3 gap-1 p-1 bg-[#0B0F17] rounded-lg border border-[#263248]">
-                <button
-                  onClick={() => setRightTab('ROM_LOADER')}
-                  className={`flex items-center justify-center gap-1.5 py-2 px-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    rightTab === 'ROM_LOADER'
-                      ? 'bg-[#1E293B] text-[#F59E0B]'
-                      : 'text-[#94A3B8] hover:text-[#F1F5F9]'
-                  }`}
-                >
-                  <Disc className="w-3.5 h-3.5" />
-                  .NES Cartridge
-                </button>
-                <button
-                  onClick={() => setRightTab('NETPLAY')}
-                  className={`flex items-center justify-center gap-1.5 py-2 px-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    rightTab === 'NETPLAY'
-                      ? 'bg-[#1E293B] text-[#F59E0B]'
-                      : 'text-[#94A3B8] hover:text-[#F1F5F9]'
-                  }`}
-                >
-                  <Radio className="w-3.5 h-3.5" />
-                  WebRTC Co-Op
-                </button>
-                <button
-                  onClick={() => setRightTab('CONTROLS')}
-                  className={`flex items-center justify-center gap-1.5 py-2 px-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    rightTab === 'CONTROLS'
-                      ? 'bg-[#1E293B] text-[#F59E0B]'
-                      : 'text-[#94A3B8] hover:text-[#F1F5F9]'
-                  }`}
-                >
-                  <Gamepad2 className="w-3.5 h-3.5" />
-                  Controls &amp; Tips
-                </button>
-              </div>
-
-              {/* TAB 1: .NES CARTRIDGE LOADER & HEADER INSPECTOR */}
-              {rightTab === 'ROM_LOADER' && (
-                <div className="space-y-4">
-                  <div>
-                    <h2 className="text-lg font-bold font-display tracking-wide text-[#F1F5F9]">
-                      Bring-Your-Own .NES ROM Loader
-                    </h2>
-                    <p className="text-xs text-[#94A3B8] mt-0.5">
-                      Upload your <code className="font-mono text-[#E2E8F0]">Contra (USA).nes</code>{' '}
-                      or any iNES ROM file locally. When you host a WebRTC room, your browser
-                      automatically transfers the ROM to your friend.
-                    </p>
-                  </div>
-
+          {/* Right 4 Columns: .NES ROM Inspector & WebRTC P2P Co-Op Room Deck (Hidden when Cinema Wide Mode is active) */}
+          {!cinemaWideMode && (
+            <aside className="lg:col-span-4 bg-[#151C28] border border-[#263248] rounded-xl p-5 flex flex-col justify-between space-y-5">
+              <div className="space-y-4">
+                {/* 3 Functional Tabs */}
+                <div className="grid grid-cols-3 gap-1 p-1 bg-[#0B0F17] rounded-lg border border-[#263248]">
                   <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="w-full py-3 px-4 rounded-lg bg-[#F59E0B] hover:bg-[#FBBF24] text-[#0B0F17] font-semibold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    onClick={() => setRightTab('ROM_LOADER')}
+                    className={`flex items-center justify-center gap-1.5 py-2 px-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      rightTab === 'ROM_LOADER'
+                        ? 'bg-[#1E293B] text-[#F59E0B]'
+                        : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                    }`}
                   >
-                    <Upload className="w-4 h-4" />
-                    Browse &amp; Load .NES ROM File
+                    <Disc className="w-3.5 h-3.5" />
+                    .NES Cartridge
                   </button>
+                  <button
+                    onClick={() => setRightTab('NETPLAY')}
+                    className={`flex items-center justify-center gap-1.5 py-2 px-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      rightTab === 'NETPLAY'
+                        ? 'bg-[#1E293B] text-[#F59E0B]'
+                        : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                    }`}
+                  >
+                    <Radio className="w-3.5 h-3.5" />
+                    WebRTC Co-Op
+                  </button>
+                  <button
+                    onClick={() => setRightTab('CONTROLS')}
+                    className={`flex items-center justify-center gap-1.5 py-2 px-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      rightTab === 'CONTROLS'
+                        ? 'bg-[#1E293B] text-[#F59E0B]'
+                        : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                    }`}
+                  >
+                    <Gamepad2 className="w-3.5 h-3.5" />
+                    Controls
+                  </button>
+                </div>
 
-                  {romMeta && (
-                    <div className="p-3.5 rounded-lg bg-[#0B0F17] border border-[#263248] font-mono text-xs space-y-2 tabular-nums">
-                      <div className="text-[#F59E0B] font-bold truncate">
-                        {romMeta.fileName}
+                {/* TAB 1: .NES CARTRIDGE LOADER & HEADER INSPECTOR */}
+                {rightTab === 'ROM_LOADER' && (
+                  <div className="space-y-4">
+                    <div>
+                      <h2 className="text-lg font-bold font-display tracking-wide text-[#F1F5F9]">
+                        Bring-Your-Own .NES ROM Loader
+                      </h2>
+                      <p className="text-xs text-[#94A3B8] mt-0.5">
+                        Upload your <code className="font-mono text-[#E2E8F0]">Contra (USA).nes</code>{' '}
+                        or any iNES ROM file locally. When you host a WebRTC room, your browser
+                        automatically transfers the ROM to your friend.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="py-2.5 px-3 rounded-lg bg-[#F59E0B] hover:bg-[#FBBF24] text-[#0B0F17] font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        Load .NES ROM
+                      </button>
+
+                      <button
+                        onClick={() => savInputRef.current?.click()}
+                        className="py-2.5 px-3 rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#E2E8F0] font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <FolderOpen className="w-3.5 h-3.5 text-[#38BDF8]" />
+                        Import .SAV File
+                      </button>
+                    </div>
+
+                    {romMeta && (
+                      <div className="p-3.5 rounded-lg bg-[#0B0F17] border border-[#263248] font-mono text-xs space-y-2 tabular-nums">
+                        <div className="text-[#F59E0B] font-bold truncate">
+                          {romMeta.fileName}
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[#94A3B8]">iNES Mapper:</span>
+                          <span className="text-[#F1F5F9] text-right">{romMeta.mapperName}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[#94A3B8]">PRG-ROM / CHR-ROM:</span>
+                          <span className="text-[#38BDF8]">
+                            {romMeta.prgRomSizeKb} KB /{' '}
+                            {romMeta.chrRomSizeKb > 0
+                              ? `${romMeta.chrRomSizeKb} KB`
+                              : '8 KB CHR-RAM'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[#94A3B8]">Nametable Mirroring:</span>
+                          <span className="text-[#E2E8F0]">{romMeta.mirroring}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[#94A3B8]">ROM CRC32 Checksum:</span>
+                          <span className="text-[#10B981]">0x{romMeta.crc32}</span>
+                        </div>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">iNES Mapper:</span>
-                        <span className="text-[#F1F5F9] text-right">{romMeta.mapperName}</span>
+                    )}
+
+                    {/* Contra 30-Lives & Co-Op Quick Launch Checklist */}
+                    <div className="p-3.5 rounded-lg bg-[#0B0F17] border border-[#263248] space-y-2">
+                      <div className="text-xs font-semibold text-[#E2E8F0]">
+                        Built-In Hardware Features:
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">PRG-ROM / CHR-ROM:</span>
-                        <span className="text-[#38BDF8]">
-                          {romMeta.prgRomSizeKb} KB /{' '}
-                          {romMeta.chrRomSizeKb > 0 ? `${romMeta.chrRomSizeKb} KB` : '8 KB CHR-RAM'}
+                      <ul className="text-xs text-[#94A3B8] space-y-1.5 list-disc list-inside">
+                        <li>
+                          <strong className="text-[#38BDF8]">Give 30 Lives (No Pause):</strong>{' '}
+                          Directly sets NES RAM <code className="font-mono">$0032/$0033 = 29</code>{' '}
+                          without pressing Start or pausing.
+                        </li>
+                        <li>
+                          <strong className="text-[#F43F5E]">Turbo Fire (20Hz):</strong> Hold down{' '}
+                          <code className="font-mono">J/Z/F</code> for automatic rapid-fire on any
+                          weapon.
+                        </li>
+                        <li>
+                          <strong className="text-[#F59E0B]">16:9 / 4:3 / Fullscreen:</strong> Use
+                          the scaling buttons above the screen to fill 100% of your display.
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 2: WEBRTC P2P MULTIPLAYER LOBBY & TACTICAL CALLOUTS */}
+                {rightTab === 'NETPLAY' && (
+                  <div className="space-y-4">
+                    <div>
+                      <h2 className="text-lg font-bold font-display tracking-wide text-[#F1F5F9]">
+                        WebRTC Peer-to-Peer NES Co-Op
+                      </h2>
+                      <p className="text-xs text-[#94A3B8] mt-0.5">
+                        Host a room as Controller 1 or join a friend&apos;s room as Controller 2.
+                      </p>
+                    </div>
+
+                    <div className="p-3.5 rounded-lg bg-[#0B0F17] border border-[#263248] space-y-3">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-[#E2E8F0]">P2P Connection State</span>
+                        <span className="font-mono text-[#10B981]">
+                          {telemetry.connectionState}
                         </span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">Nametable Mirroring:</span>
-                        <span className="text-[#E2E8F0]">{romMeta.mirroring}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">ROM CRC32 Checksum:</span>
-                        <span className="text-[#10B981]">0x{romMeta.crc32}</span>
-                      </div>
-                    </div>
-                  )}
 
-                  {/* Contra 30-Lives & Co-Op Quick Launch Checklist */}
-                  <div className="p-3.5 rounded-lg bg-[#0B0F17] border border-[#263248] space-y-2">
-                    <div className="text-xs font-semibold text-[#E2E8F0]">
-                      How 30-Lives &amp; Weapon Cheats Work:
-                    </div>
-                    <ul className="text-xs text-[#94A3B8] space-y-1.5 list-disc list-inside">
-                      <li>
-                        <strong className="text-[#38BDF8]">Give 30 Lives (No Pause):</strong> Writes{' '}
-                        <code className="font-mono text-[#E2E8F0]">29</code> reserve lives directly
-                        into NES RAM <code className="font-mono text-[#E2E8F0]">$0032</code> (1P) &amp;{' '}
-                        <code className="font-mono text-[#E2E8F0]">$0033</code> (2P) anytime while
-                        playing—never presses Start and never pauses!
-                      </li>
-                      <li>
-                        <strong className="text-[#10B981]">Infinite 30 Lives ON:</strong> Locks both
-                        players at 30 lives every frame so you never Game Over.
-                      </li>
-                      <li>
-                        <strong className="text-[#F59E0B]">Contra RAM Gun [S]/[L]/[M]/[F]:</strong>{' '}
-                        Equips Spread Gun or Laser directly in RAM{' '}
-                        <code className="font-mono text-[#E2E8F0]">$00AA/$00AB</code>.
-                      </li>
-                    </ul>
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 2: WEBRTC P2P MULTIPLAYER LOBBY */}
-              {rightTab === 'NETPLAY' && (
-                <div className="space-y-4">
-                  <div>
-                    <h2 className="text-lg font-bold font-display tracking-wide text-[#F1F5F9]">
-                      WebRTC Peer-to-Peer NES Co-Op
-                    </h2>
-                    <p className="text-xs text-[#94A3B8] mt-0.5">
-                      Host a room as Controller 1 or join a friend&apos;s room as Controller 2.
-                      Uploaded <code className="font-mono text-[#E2E8F0]">.nes</code> ROMs and save
-                      states sync automatically between peers.
-                    </p>
-                  </div>
-
-                  <div className="p-4 rounded-lg bg-[#0B0F17] border border-[#263248] space-y-3.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-[#E2E8F0]">P2P Connection State</span>
-                      <span className="font-mono text-[#10B981]">
-                        {telemetry.connectionState}
-                      </span>
-                    </div>
-
-                    {telemetry.roomCode ? (
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between p-3 rounded bg-[#151C28] border border-[#263248]">
-                          <div>
-                            <div className="text-[11px] text-[#94A3B8]">
-                              Room Code · You are{' '}
-                              <strong className="text-[#38BDF8]">
-                                Controller {telemetry.localPlayerIndex + 1}
-                              </strong>
+                      {telemetry.roomCode ? (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between p-2.5 rounded bg-[#151C28] border border-[#263248]">
+                            <div>
+                              <div className="text-[11px] text-[#94A3B8]">
+                                Room Code ·{' '}
+                                <strong className="text-[#38BDF8]">
+                                  Controller {telemetry.localPlayerIndex + 1}
+                                </strong>
+                              </div>
+                              <div className="text-xl font-mono font-bold tracking-widest text-[#F59E0B]">
+                                {telemetry.roomCode}
+                              </div>
                             </div>
-                            <div className="text-2xl font-mono font-bold tracking-widest text-[#F59E0B]">
-                              {telemetry.roomCode}
-                            </div>
-                          </div>
-                          <button
-                            onClick={handleCopyCode}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9] cursor-pointer"
-                          >
-                            {copiedCode ? (
-                              <Check className="w-3.5 h-3.5 text-[#10B981]" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                            {copiedCode ? 'Copied' : 'Copy Code'}
-                          </button>
-                        </div>
-
-                        <div className="text-xs text-[#94A3B8]">
-                          Peer Status:{' '}
-                          <strong
-                            className={
-                              telemetry.peerConnected ? 'text-[#10B981]' : 'text-[#F59E0B]'
-                            }
-                          >
-                            {telemetry.peerConnected
-                              ? 'Player 2 Connected & Synced'
-                              : 'Waiting for Friend to Join...'}
-                          </strong>
-                        </div>
-
-                        <button
-                          onClick={() => nesCoordinatorRef.current?.syncExactSaveStateToPeer()}
-                          className="w-full py-2 px-3 text-xs font-semibold rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#38BDF8] flex items-center justify-center gap-1.5 cursor-pointer"
-                        >
-                          <RefreshCw className="w-3.5 h-3.5" />
-                          Force Sync Exact NES CPU/PPU State to Friend
-                        </button>
-
-                        <button
-                          onClick={() => nesCoordinatorRef.current?.disconnectRoom()}
-                          className="w-full py-1.5 text-xs font-semibold text-[#F43F5E] hover:underline cursor-pointer"
-                        >
-                          Disconnect from Room
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        <button
-                          onClick={handleHostRoom}
-                          className="w-full py-2.5 px-4 text-xs font-semibold text-[#0B0F17] bg-[#F59E0B] hover:bg-[#FBBF24] rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                        >
-                          <Users className="w-4 h-4" />
-                          Create P2P Room (Host as Controller 1)
-                        </button>
-
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="text"
-                            maxLength={6}
-                            value={joinCodeInput}
-                            onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
-                            placeholder="Enter 6-Char Code"
-                            className="flex-1 px-3 py-2 text-xs font-mono uppercase bg-[#151C28] border border-[#263248] rounded-lg text-[#F1F5F9] placeholder-[#64748B] focus:outline-none focus:border-[#38BDF8]"
-                          />
-                          <button
-                            onClick={() => handleJoinRoom()}
-                            className="px-4 py-2 text-xs font-semibold bg-[#38BDF8] text-[#0B0F17] hover:bg-[#7DD3FC] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                          >
-                            Join as 2P
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Active Open Rooms List */}
-                    {publicRooms.length > 0 && !telemetry.roomCode && (
-                      <div className="pt-2 border-t border-[#263248] space-y-1.5">
-                        <div className="text-[11px] text-[#94A3B8]">
-                          Open Rooms Waiting for Player 2:
-                        </div>
-                        {publicRooms.map((rm) => (
-                          <div
-                            key={rm.code}
-                            className="flex items-center justify-between text-xs bg-[#151C28] px-2.5 py-1.5 rounded border border-[#263248]"
-                          >
-                            <span className="font-mono font-semibold text-[#F59E0B]">
-                              {rm.code}
-                            </span>
-                            <span className="text-[#94A3B8] text-[11px] truncate max-w-[130px]">
-                              {rm.romName}
-                            </span>
                             <button
-                              onClick={() => handleJoinRoom(rm.code)}
-                              className="text-xs font-semibold text-[#38BDF8] hover:underline cursor-pointer"
+                              onClick={handleCopyCode}
+                              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9] cursor-pointer"
                             >
-                              Join Room
+                              {copiedCode ? (
+                                <Check className="w-3.5 h-3.5 text-[#10B981]" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                              {copiedCode ? 'Copied' : 'Copy'}
                             </button>
                           </div>
+
+                          <button
+                            onClick={() => nesCoordinatorRef.current?.syncExactSaveStateToPeer()}
+                            className="w-full py-2 px-3 text-xs font-semibold rounded-lg bg-[#1E293B] hover:bg-[#334155] text-[#38BDF8] flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            Force Sync Exact NES State to Friend
+                          </button>
+
+                          <button
+                            onClick={() => nesCoordinatorRef.current?.disconnectRoom()}
+                            className="w-full py-1 text-xs font-semibold text-[#F43F5E] hover:underline cursor-pointer"
+                          >
+                            Disconnect from Room
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="space-y-2.5">
+                          <button
+                            onClick={handleHostRoom}
+                            className="w-full py-2.5 px-4 text-xs font-semibold text-[#0B0F17] bg-[#F59E0B] hover:bg-[#FBBF24] rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                          >
+                            <Users className="w-4 h-4" />
+                            Create P2P Room (Host as 1P)
+                          </button>
+
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              maxLength={6}
+                              value={joinCodeInput}
+                              onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+                              placeholder="Enter 6-Char Code"
+                              className="flex-1 px-3 py-2 text-xs font-mono uppercase bg-[#151C28] border border-[#263248] rounded-lg text-[#F1F5F9] placeholder-[#64748B] focus:outline-none focus:border-[#38BDF8]"
+                            />
+                            <button
+                              onClick={() => handleJoinRoom()}
+                              className="px-4 py-2 text-xs font-semibold bg-[#38BDF8] text-[#0B0F17] hover:bg-[#7DD3FC] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                            >
+                              Join as 2P
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Open Rooms List */}
+                      {publicRooms.length > 0 && !telemetry.roomCode && (
+                        <div className="pt-2 border-t border-[#263248] space-y-1.5">
+                          <div className="text-[11px] text-[#94A3B8]">
+                            Open Rooms Waiting for Player 2:
+                          </div>
+                          {publicRooms.map((rm) => (
+                            <div
+                              key={rm.code}
+                              className="flex items-center justify-between text-xs bg-[#151C28] px-2.5 py-1.5 rounded border border-[#263248]"
+                            >
+                              <span className="font-mono font-semibold text-[#F59E0B]">
+                                {rm.code}
+                              </span>
+                              <span className="text-[#94A3B8] text-[11px] truncate max-w-[130px]">
+                                {rm.romName}
+                              </span>
+                              <button
+                                onClick={() => handleJoinRoom(rm.code)}
+                                className="text-xs font-semibold text-[#38BDF8] hover:underline cursor-pointer"
+                              >
+                                Join
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Co-Op Tactical Callouts & Quick-Chat */}
+                    <div className="p-3.5 rounded-lg bg-[#0B0F17] border border-[#263248] space-y-2.5">
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-[#E2E8F0]">
+                        <MessageSquare className="w-3.5 h-3.5 text-[#38BDF8]" />
+                        Co-Op Tactical Callouts
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5">
+                        {[
+                          'Take Spread [S]!',
+                          'Pop 30 Lives!',
+                          'Hold Bridge!',
+                          'Boss Ahead!',
+                        ].map((preset) => (
+                          <button
+                            key={preset}
+                            onClick={() => handleSendCallout(preset)}
+                            className="px-2 py-1 text-[11px] font-mono bg-[#151C28] hover:bg-[#1E293B] border border-[#263248] rounded text-[#38BDF8] cursor-pointer"
+                          >
+                            {preset}
+                          </button>
                         ))}
                       </div>
-                    )}
-                  </div>
-                </div>
-              )}
 
-              {/* TAB 3: CONTROLLER MAPPING & GAMEPAD SUPPORT */}
-              {rightTab === 'CONTROLS' && (
-                <div className="space-y-4">
-                  <div>
-                    <h2 className="text-lg font-bold font-display tracking-wide text-[#F1F5F9]">
-                      NES Controller 1 &amp; 2 Mapping
-                    </h2>
-                    <p className="text-xs text-[#94A3B8] mt-0.5">
-                      Supports Keyboard and USB/Bluetooth Gamepads (Xbox, PlayStation, 8BitDo) via
-                      the HTML5 Gamepad API.
-                    </p>
-                  </div>
+                      {chatMessages.length > 0 && (
+                        <div className="max-h-24 overflow-y-auto space-y-1 text-xs font-mono bg-[#151C28] p-2 rounded border border-[#263248]">
+                          {chatMessages.map((m) => (
+                            <div key={m.id}>
+                              <span
+                                className={
+                                  m.sender === 'P1' ? 'text-[#38BDF8]' : 'text-[#F43F5E]'
+                                }
+                              >
+                                [{m.sender}]:
+                              </span>{' '}
+                              <span className="text-[#E2E8F0]">{m.text}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
-                  <div className="p-3.5 rounded-lg bg-[#0B0F17] border border-[#263248] space-y-2 text-xs font-mono">
-                    <div className="text-[#38BDF8] font-bold">
-                      NES CONTROLLER 1 (Host / Solo / Online Peer)
-                    </div>
-                    <div className="flex justify-between text-[#94A3B8]">
-                      <span>D-Pad (8-Way Aim):</span>
-                      <span className="text-[#F1F5F9]">W / A / S / D</span>
-                    </div>
-                    <div className="flex justify-between text-[#94A3B8]">
-                      <span>B Button (Fire / Shoot):</span>
-                      <span className="text-[#F1F5F9]">J or Z or F</span>
-                    </div>
-                    <div className="flex justify-between text-[#94A3B8]">
-                      <span>A Button (Jump):</span>
-                      <span className="text-[#F1F5F9]">K or X or Space</span>
-                    </div>
-                    <div className="flex justify-between text-[#94A3B8]">
-                      <span>SELECT (1P / 2P Cursor):</span>
-                      <span className="text-[#F1F5F9]">Right/Left Shift</span>
-                    </div>
-                    <div className="flex justify-between text-[#94A3B8]">
-                      <span>START (Begin / Pause):</span>
-                      <span className="text-[#F1F5F9]">Enter</span>
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          handleSendCallout(chatInput);
+                        }}
+                        className="flex gap-1.5"
+                      >
+                        <input
+                          type="text"
+                          value={chatInput}
+                          onChange={(e) => setChatInput(e.target.value)}
+                          placeholder="Send message to co-op partner..."
+                          className="flex-1 px-2.5 py-1.5 text-xs bg-[#151C28] border border-[#263248] rounded text-[#F1F5F9] placeholder-[#64748B] focus:outline-none focus:border-[#38BDF8]"
+                        />
+                        <button
+                          type="submit"
+                          className="px-3 py-1.5 text-xs font-semibold bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9] rounded cursor-pointer"
+                        >
+                          Send
+                        </button>
+                      </form>
                     </div>
                   </div>
+                )}
 
-                  <div className="p-3.5 rounded-lg bg-[#0B0F17] border border-[#263248] space-y-2 text-xs font-mono">
-                    <div className="text-[#F43F5E] font-bold">
-                      NES CONTROLLER 2 (Shared Local Keyboard)
+                {/* TAB 3: CONTROLLER MAPPING & GAMEPAD SUPPORT */}
+                {rightTab === 'CONTROLS' && (
+                  <div className="space-y-4">
+                    <div>
+                      <h2 className="text-lg font-bold font-display tracking-wide text-[#F1F5F9]">
+                        NES Controller 1 &amp; 2 Mapping
+                      </h2>
+                      <p className="text-xs text-[#94A3B8] mt-0.5">
+                        Supports Keyboard and USB/Bluetooth Gamepads (Xbox, PlayStation, 8BitDo).
+                      </p>
                     </div>
-                    <div className="flex justify-between text-[#94A3B8]">
-                      <span>D-Pad:</span>
-                      <span className="text-[#F1F5F9]">Arrow Keys</span>
+
+                    <div className="p-3.5 rounded-lg bg-[#0B0F17] border border-[#263248] space-y-2 text-xs font-mono">
+                      <div className="text-[#38BDF8] font-bold">
+                        NES CONTROLLER 1 (Host / Solo / Online Peer)
+                      </div>
+                      <div className="flex justify-between text-[#94A3B8]">
+                        <span>D-Pad (8-Way Aim):</span>
+                        <span className="text-[#F1F5F9]">W / A / S / D</span>
+                      </div>
+                      <div className="flex justify-between text-[#94A3B8]">
+                        <span>B Button (Turbo Fire):</span>
+                        <span className="text-[#F1F5F9]">J or Z or F (or U)</span>
+                      </div>
+                      <div className="flex justify-between text-[#94A3B8]">
+                        <span>A Button (Jump):</span>
+                        <span className="text-[#F1F5F9]">K or X or Space</span>
+                      </div>
+                      <div className="flex justify-between text-[#94A3B8]">
+                        <span>SELECT (1P / 2P Cursor):</span>
+                        <span className="text-[#F1F5F9]">Right/Left Shift</span>
+                      </div>
+                      <div className="flex justify-between text-[#94A3B8]">
+                        <span>START (Begin / Pause):</span>
+                        <span className="text-[#F1F5F9]">Enter</span>
+                      </div>
                     </div>
-                    <div className="flex justify-between text-[#94A3B8]">
-                      <span>B Button (Fire):</span>
-                      <span className="text-[#F1F5F9]">N or Comma (,)</span>
-                    </div>
-                    <div className="flex justify-between text-[#94A3B8]">
-                      <span>A Button (Jump):</span>
-                      <span className="text-[#F1F5F9]">M or Period (.)</span>
-                    </div>
-                    <div className="flex justify-between text-[#94A3B8]">
-                      <span>SELECT / START:</span>
-                      <span className="text-[#F1F5F9]">[ and ]</span>
+
+                    <div className="p-3.5 rounded-lg bg-[#0B0F17] border border-[#263248] space-y-2 text-xs font-mono">
+                      <div className="text-[#F43F5E] font-bold">
+                        NES CONTROLLER 2 (Shared Local Keyboard)
+                      </div>
+                      <div className="flex justify-between text-[#94A3B8]">
+                        <span>D-Pad:</span>
+                        <span className="text-[#F1F5F9]">Arrow Keys</span>
+                      </div>
+                      <div className="flex justify-between text-[#94A3B8]">
+                        <span>B Button (Fire):</span>
+                        <span className="text-[#F1F5F9]">N or Comma (,)</span>
+                      </div>
+                      <div className="flex justify-between text-[#94A3B8]">
+                        <span>A Button (Jump):</span>
+                        <span className="text-[#F1F5F9]">M or Period (.)</span>
+                      </div>
+                      <div className="flex justify-between text-[#94A3B8]">
+                        <span>SELECT / START:</span>
+                        <span className="text-[#F1F5F9]">[ and ]</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
 
-            <div className="pt-3 border-t border-[#263248] flex items-center justify-between text-xs text-[#94A3B8] font-mono tabular-nums">
-              <span>CPU: MOS 6502 (1.79 MHz)</span>
-              <span>NTSC: 60.0988 FPS</span>
-            </div>
-          </aside>
+              <div className="pt-3 border-t border-[#263248] flex items-center justify-between text-xs text-[#94A3B8] font-mono tabular-nums">
+                <span>CPU: MOS 6502 (1.79 MHz)</span>
+                <span>NTSC: 60.0988 FPS</span>
+              </div>
+            </aside>
+          )}
         </section>
 
         {/* Full-Width 4-Card Live NES & WebRTC Telemetry Strip */}

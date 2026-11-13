@@ -8,10 +8,16 @@ import {
 export interface NesNetplayPacket {
   frame: number;
   playerIndex: 0 | 1;
-  /** Sliding window of 8 recent frames of 8-bit NES controller masks */
   inputs: number[];
   timestamp: number;
   ramChecksum: number;
+}
+
+export interface ChatMessageItem {
+  id: string;
+  sender: 'P1' | 'P2' | 'SYSTEM';
+  text: string;
+  timestamp: number;
 }
 
 export interface NesNetplayTelemetry {
@@ -30,12 +36,6 @@ export interface NesNetplayTelemetry {
   romSyncedWithPeer: boolean;
 }
 
-/**
- * WebRTC Peer-to-Peer NES Coordinator
- * - Syncs uploaded .nes ROM binary automatically from Host (Player 1) to Joining Friend (Player 2)
- * - Streams 60Hz NES Controller 1 & Controller 2 bitmasks over unordered WebRTC RTCDataChannel
- * - Supports instant NES Save State Synchronization over WebRTC / WebSocket so both players stay 100% locked
- */
 export class NesWebRtcCoordinator {
   public nesCore = new RealNesHardwareCore();
   private rawRomBytes: Uint8Array | null = null;
@@ -66,15 +66,18 @@ export class NesWebRtcCoordinator {
   private onTelemetryChange?: (t: NesNetplayTelemetry) => void;
   private onRomLoadedFromPeer?: (meta: InesRomMetadata) => void;
   private onStatusToast?: (msg: string) => void;
+  private onChatReceived?: (msg: ChatMessageItem) => void;
 
   constructor(callbacks?: {
     onTelemetryChange?: (t: NesNetplayTelemetry) => void;
     onRomLoadedFromPeer?: (meta: InesRomMetadata) => void;
     onStatusToast?: (msg: string) => void;
+    onChatReceived?: (msg: ChatMessageItem) => void;
   }) {
     this.onTelemetryChange = callbacks?.onTelemetryChange;
     this.onRomLoadedFromPeer = callbacks?.onRomLoadedFromPeer;
     this.onStatusToast = callbacks?.onStatusToast;
+    this.onChatReceived = callbacks?.onChatReceived;
   }
 
   public loadUserNesRom(bytes: Uint8Array, fileName: string, broadcastToPeer = true): InesRomMetadata {
@@ -85,7 +88,6 @@ export class NesWebRtcCoordinator {
     this.lastKnownRemoteMask = 0;
     this.telemetry.engineMode = 'NES_HARDWARE';
 
-    // If already connected to a WebRTC room, automatically beam the .nes ROM to the friend!
     if (broadcastToPeer && this.ws && this.ws.readyState === WebSocket.OPEN) {
       const romBase64 = uint8ArrayToBase64(bytes);
       this.ws.send(
@@ -104,9 +106,6 @@ export class NesWebRtcCoordinator {
     return meta;
   }
 
-  /**
-   * Step one 60Hz NES frame in either Local 1P/2P or Online WebRTC Co-Op mode
-   */
   public tickNesFrame(localP1Mask: number, localP2Mask: number): void {
     if (!this.nesCore.romLoaded) return;
     const t0 = performance.now();
@@ -128,7 +127,6 @@ export class NesWebRtcCoordinator {
 
       this.nesCore.stepFrame(p1, p2);
     } else {
-      // Local 1P / 2P mode
       this.nesCore.stepFrame(localP1Mask, localP2Mask);
     }
 
@@ -141,9 +139,28 @@ export class NesWebRtcCoordinator {
     }
   }
 
-  /**
-   * Sync exact 6502 CPU + PPU + Mapper state from Host to Peer so both friends are on the exact same pixel/enemy
-   */
+  public sendChatOrCallout(text: string): void {
+    const sender: 'P1' | 'P2' = this.telemetry.localPlayerIndex === 0 ? 'P1' : 'P2';
+    const item: ChatMessageItem = {
+      id: Math.random().toString(36).slice(2),
+      sender,
+      text,
+      timestamp: Date.now(),
+    };
+    this.onChatReceived?.(item);
+
+    if (this.dataChannel && this.dataChannel.readyState === 'open') {
+      this.dataChannel.send(JSON.stringify({ type: 'chat', item }));
+    } else if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({
+          type: 'netplay:relay',
+          chatItem: item,
+        })
+      );
+    }
+  }
+
   public syncExactSaveStateToPeer(): void {
     if (!this.nesCore.romLoaded) return;
     const stateJson = this.nesCore.saveStateSnapshot();
@@ -211,7 +228,6 @@ export class NesWebRtcCoordinator {
           this.telemetry.peerConnected = true;
           this.telemetry.connectionState = 'WS_RELAY';
 
-          // Automatically load Host's .nes ROM if present in the room!
           if (msg.romBase64) {
             try {
               const bytes = base64ToUint8Array(msg.romBase64);
@@ -271,6 +287,9 @@ export class NesWebRtcCoordinator {
         case 'netplay:relay': {
           if (msg.packet) {
             this.receiveRemotePacket(msg.packet);
+          }
+          if (msg.chatItem) {
+            this.onChatReceived?.(msg.chatItem);
           }
           break;
         }
@@ -362,6 +381,8 @@ export class NesWebRtcCoordinator {
           this.telemetry.pingRttMs = Math.max(1, Math.round(performance.now() - msg.t));
         } else if (msg.type === 'frame') {
           this.receiveRemotePacket(msg.packet);
+        } else if (msg.type === 'chat' && msg.item) {
+          this.onChatReceived?.(msg.item);
         }
       } catch {
         // Ignore malformed datagram

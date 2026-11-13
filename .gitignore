@@ -6,3 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Ignore AI Studio chat attachments & debug screenshots
+public/assets/aistudio/
+assets/aistudio/
+.aistudio/
+*.png
+*.jpg
+*.jpeg
+
+# Ignore local user ROMs & save states
+*.nes
+*.sav

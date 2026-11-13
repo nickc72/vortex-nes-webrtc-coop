@@ -13,6 +13,18 @@ export const NES_BTN_DOWN = 1 << 5;
 export const NES_BTN_LEFT = 1 << 6;
 export const NES_BTN_RIGHT = 1 << 7;
 
+export type ContraWeaponCode = 'M' | 'F' | 'S' | 'L' | 'R';
+
+export type FrameCheatCommand =
+  | 'NONE'
+  | 'GIVE_30_LIVES'
+  | 'LOCK_30_ON'
+  | 'LOCK_30_OFF'
+  | 'WPN_S'
+  | 'WPN_L'
+  | 'WPN_M'
+  | 'WPN_F';
+
 export interface InesRomMetadata {
   valid: boolean;
   fileName: string;
@@ -50,9 +62,9 @@ export function computeCrc32(bytes: Uint8Array): string {
 export function parseInesHeader(bytes: Uint8Array, fileName: string): InesRomMetadata {
   if (
     bytes.length < 16 ||
-    bytes[0] !== 0x4e || // 'N'
-    bytes[1] !== 0x45 || // 'E'
-    bytes[2] !== 0x53 || // 'S'
+    bytes[0] !== 0x4e ||
+    bytes[1] !== 0x45 ||
+    bytes[2] !== 0x53 ||
     bytes[3] !== 0x1a
   ) {
     return {
@@ -178,8 +190,6 @@ class NesAudioRingBuffer {
   };
 }
 
-export type ContraWeaponCode = 'M' | 'F' | 'S' | 'L' | 'R';
-
 /**
  * Real 6502 CPU + 2C02 PPU + 2A03 APU Hardware Emulator Wrapper
  */
@@ -189,14 +199,11 @@ export class RealNesHardwareCore {
   public romLoaded = false;
   public romMeta: InesRomMetadata | null = null;
   public frameCounter = 0;
-
-  // Game Genie / 6502 RAM Cheat locks for Contra (NES)
   public lock30Lives = false;
 
   private lastRomBinaryString: string | null = null;
   private rgbaBuffer = new Uint32Array(NES_WIDTH * NES_HEIGHT);
   private prevMask: [number, number] = [0, 0];
-  private konamiQueue: number[] = [];
 
   constructor() {
     this.nes = this.createNesInstance();
@@ -231,79 +238,47 @@ export class RealNesHardwareCore {
     this.romMeta = meta;
     this.frameCounter = 0;
     this.prevMask = [0, 0];
-    this.konamiQueue = [];
     this.audio.clearBuffer();
     this.audio.start();
     return meta;
   }
 
   /**
-   * Injects 30 Lives directly into NES 6502 Zero-Page RAM ($0032 = P1 Lives, $0033 = P2 Lives)
-   * Works immediately during active Contra gameplay WITHOUT pressing Start or pausing the game!
-   * Also queues the non-pausing Konami Code (↑ ↑ ↓ ↓ ← → ← → B A) if currently on the Title Screen.
+   * Deterministic Cheat Command Application (runs on exact same frame F on both Host and Peer)
    */
-  public activate30LivesCheat(enableLock = false): void {
-    if (!this.romLoaded || !this.nes.cpu?.mem) return;
+  public applyDeterministicCheatCommand(cmd: FrameCheatCommand): void {
+    if (!this.romLoaded || !this.nes.cpu?.mem || cmd === 'NONE') return;
 
-    if (enableLock) {
-      this.lock30Lives = !this.lock30Lives;
+    switch (cmd) {
+      case 'GIVE_30_LIVES':
+        this.nes.cpu.mem[0x0032] = 29;
+        this.nes.cpu.mem[0x0033] = 29;
+        break;
+      case 'LOCK_30_ON':
+        this.lock30Lives = true;
+        this.nes.cpu.mem[0x0032] = 29;
+        this.nes.cpu.mem[0x0033] = 29;
+        break;
+      case 'LOCK_30_OFF':
+        this.lock30Lives = false;
+        break;
+      case 'WPN_S':
+        this.nes.cpu.mem[0x00aa] = 0x13;
+        this.nes.cpu.mem[0x00ab] = 0x13;
+        break;
+      case 'WPN_L':
+        this.nes.cpu.mem[0x00aa] = 0x14;
+        this.nes.cpu.mem[0x00ab] = 0x14;
+        break;
+      case 'WPN_M':
+        this.nes.cpu.mem[0x00aa] = 0x11;
+        this.nes.cpu.mem[0x00ab] = 0x11;
+        break;
+      case 'WPN_F':
+        this.nes.cpu.mem[0x00aa] = 0x12;
+        this.nes.cpu.mem[0x00ab] = 0x12;
+        break;
     }
-
-    // In Contra (NES), RAM $0030 contains game mode/state, $0032 = P1 Lives, $0033 = P2 Lives
-    this.nes.cpu.mem[0x0032] = 29; // 29 reserve + 1 active = 30 Lives for Player 1
-    this.nes.cpu.mem[0x0033] = 29; // 29 reserve + 1 active = 30 Lives for Player 2
-
-    // If the user is still on the Contra Title Screen ($0032 is 0 before stage load),
-    // also feed ↑ ↑ ↓ ↓ ← → ← → B A (without START so it never pauses!)
-    if (this.frameCounter < 900) {
-      const seq = [
-        NES_BTN_UP,
-        0,
-        NES_BTN_UP,
-        0,
-        NES_BTN_DOWN,
-        0,
-        NES_BTN_DOWN,
-        0,
-        NES_BTN_LEFT,
-        0,
-        NES_BTN_RIGHT,
-        0,
-        NES_BTN_LEFT,
-        0,
-        NES_BTN_RIGHT,
-        0,
-        NES_BTN_B,
-        0,
-        NES_BTN_A,
-        0,
-      ];
-      this.konamiQueue = [];
-      for (const mask of seq) {
-        this.konamiQueue.push(mask, mask);
-      }
-    }
-  }
-
-  /**
-   * Directly injects a weapon into Player 1 ($00AA) & Player 2 ($00AB) RAM in Contra (NES)
-   * without pausing or needing a flying capsule!
-   */
-  public injectContraWeapon(weapon: ContraWeaponCode): void {
-    if (!this.romLoaded || !this.nes.cpu?.mem) return;
-    // Contra (NES) Weapon Byte ($00AA = P1, $00AB = P2):
-    // Low nibble: 0 = Rifle, 1 = Machine Gun (M), 2 = Flame (F), 3 = Spread (S), 4 = Laser (L)
-    // Bit 4 (0x10): Rapid Fire (R) upgrade enabled!
-    const mapCode: Record<ContraWeaponCode, number> = {
-      M: 0x11, // Machine Gun + Rapid
-      F: 0x12, // Flame Thrower + Rapid
-      S: 0x13, // Spread Gun + Rapid Fire
-      L: 0x14, // Laser + Rapid Fire
-      R: 0x10 | ((this.nes.cpu.mem[0x00aa] || 0) & 0x0f), // Add Rapid Fire to current weapon
-    };
-    const val = mapCode[weapon];
-    this.nes.cpu.mem[0x00aa] = val;
-    this.nes.cpu.mem[0x00ab] = val;
   }
 
   public applyControllerMask(controllerIndex: 1 | 2, mask: number): void {
@@ -337,15 +312,17 @@ export class RealNesHardwareCore {
   /**
    * Advance one 60Hz NTSC frame on the 6502 CPU + 2C02 PPU
    */
-  public stepFrame(p1Mask: number, p2Mask: number): void {
+  public stepFrame(
+    p1Mask: number,
+    p2Mask: number,
+    cheatCmd: FrameCheatCommand = 'NONE'
+  ): void {
     if (!this.romLoaded) return;
 
-    let effectiveP1 = p1Mask;
-    if (this.konamiQueue.length > 0) {
-      effectiveP1 = this.konamiQueue.shift()!;
+    if (cheatCmd !== 'NONE') {
+      this.applyDeterministicCheatCommand(cheatCmd);
     }
 
-    // Keep 30 lives locked in 6502 RAM if the user enabled the 30-Lives Lock toggle
     if (this.lock30Lives && this.nes.cpu?.mem) {
       if (this.nes.cpu.mem[0x0032] > 0 && this.nes.cpu.mem[0x0032] < 29) {
         this.nes.cpu.mem[0x0032] = 29;
@@ -356,12 +333,12 @@ export class RealNesHardwareCore {
     }
 
     try {
-      this.applyControllerMask(1, effectiveP1);
+      this.applyControllerMask(1, p1Mask);
       this.applyControllerMask(2, p2Mask);
       this.nes.frame();
       this.frameCounter += 1;
     } catch (err) {
-      console.error('NES frame step error, recovering:', err);
+      console.error('NES frame step error:', err);
     }
   }
 
@@ -382,27 +359,28 @@ export class RealNesHardwareCore {
     }
   }
 
-  public loadStateSnapshot(snapshot: Record<string, unknown>): void {
+  public loadStateSnapshot(snapshot: Record<string, unknown>, newFrameCounter?: number): void {
     if (!this.romLoaded || !snapshot) return;
     try {
+      // Force release all buttons before loading snapshot so prevMask and internal jsnes state match
+      this.applyControllerMask(1, 0);
+      this.applyControllerMask(2, 0);
       this.nes.fromJSON(snapshot);
+      if (typeof newFrameCounter === 'number') {
+        this.frameCounter = newFrameCounter;
+      }
       this.prevMask = [0, 0];
     } catch (err) {
       console.error('Failed to restore snapshot:', err);
     }
   }
 
-  /**
-   * Safe Hardware Reboot: Reloads the stored iNES binary into a clean NES instance
-   * (Calling jsnes .reset() directly unmaps Mapper 2 PRG banks and freezes the CPU).
-   */
   public resetConsole(): void {
     if (!this.romLoaded || !this.lastRomBinaryString) return;
     this.nes = this.createNesInstance();
     this.nes.loadROM(this.lastRomBinaryString);
     this.frameCounter = 0;
     this.prevMask = [0, 0];
-    this.konamiQueue = [];
     this.audio.clearBuffer();
   }
 
@@ -410,7 +388,7 @@ export class RealNesHardwareCore {
     if (!this.romLoaded || !this.nes.cpu?.mem) return 0;
     const mem = this.nes.cpu.mem;
     let hash = this.frameCounter * 31;
-    for (let i = 0; i < 0x0800; i += 4) {
+    for (let i = 0; i < 0x0800; i += 2) {
       hash = ((hash << 5) - hash + (mem[i] || 0)) | 0;
     }
     return hash >>> 0;

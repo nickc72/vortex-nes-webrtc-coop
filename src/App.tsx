@@ -331,47 +331,38 @@ export default function App() {
     };
   }, []);
 
-  // 60Hz Fixed-Timestep Emulator Loop (Supports 1x Normal 60fps & 2x Fast-Forward)
+  // Unthrottled 60.0988 Hz Web Worker Clock + Direct Canvas Renderer
+  // Ensures that even when testing with 1 Normal Window + 1 Incognito Window side-by-side,
+  // Chrome never throttles the unfocused window's 60fps NES CPU, WebRTC packets, OR canvas drawing!
   useEffect(() => {
-    let animId = 0;
-    let lastTime = performance.now();
-    let accumulator = 0;
-    const STEP_MS = 1000 / (60.0988 * speedMultiplier);
     let framesRendered = 0;
     let fpsTimer = performance.now();
 
-    const loop = (now: number) => {
-      const delta = Math.min(100, now - lastTime);
-      lastTime = now;
-
-      if (!paused) {
-        accumulator += delta;
-        let subSteps = 0;
-        const maxSteps = speedMultiplier === 2 ? 6 : 3;
-        while (accumulator >= STEP_MS && subSteps < maxSteps) {
-          if (coreMode === 'NES_ROM' && nesCoordinatorRef.current) {
-            const [p1, p2] = pollNesControllers();
-            nesCoordinatorRef.current.tickNesFrame(p1, p2);
-          } else if (coreMode === 'BUILTIN_DEMO' && demoEngineRef.current) {
-            const [nesP1, nesP2] = pollNesControllers();
-            const mapNesToDemo = (m: number): number => {
-              let out = 0;
-              if (m & NES_BTN_UP) out |= INPUT_UP;
-              if (m & NES_BTN_DOWN) out |= INPUT_DOWN;
-              if (m & NES_BTN_LEFT) out |= INPUT_LEFT;
-              if (m & NES_BTN_RIGHT) out |= INPUT_RIGHT;
-              if (m & NES_BTN_A) out |= INPUT_JUMP;
-              if (m & NES_BTN_B) out |= INPUT_FIRE;
-              if (m & NES_BTN_SELECT) out |= INPUT_WEAPON_SWAP;
-              return out;
-            };
-            demoEngineRef.current.tickFrame(mapNesToDemo(nesP1), mapNesToDemo(nesP2));
-          }
-          accumulator -= STEP_MS;
-          subSteps += 1;
+    const stepEmulatorTick = () => {
+      if (paused) return;
+      const steps = speedMultiplier === 2 ? 2 : 1;
+      for (let s = 0; s < steps; s++) {
+        if (coreMode === 'NES_ROM' && nesCoordinatorRef.current) {
+          const [p1, p2] = pollNesControllers();
+          nesCoordinatorRef.current.tickNesFrame(p1, p2);
+        } else if (coreMode === 'BUILTIN_DEMO' && demoEngineRef.current) {
+          const [nesP1, nesP2] = pollNesControllers();
+          const mapNesToDemo = (m: number): number => {
+            let out = 0;
+            if (m & NES_BTN_UP) out |= INPUT_UP;
+            if (m & NES_BTN_DOWN) out |= INPUT_DOWN;
+            if (m & NES_BTN_LEFT) out |= INPUT_LEFT;
+            if (m & NES_BTN_RIGHT) out |= INPUT_RIGHT;
+            if (m & NES_BTN_A) out |= INPUT_JUMP;
+            if (m & NES_BTN_B) out |= INPUT_FIRE;
+            if (m & NES_BTN_SELECT) out |= INPUT_WEAPON_SWAP;
+            return out;
+          };
+          demoEngineRef.current.tickFrame(mapNesToDemo(nesP1), mapNesToDemo(nesP2));
         }
       }
 
+      // Draw directly on every 60Hz Worker tick so unfocused side-by-side windows stay 60fps
       if (coreMode === 'NES_ROM' && nesCanvasRef.current && nesCoordinatorRef.current) {
         const ctx = nesCanvasRef.current.getContext('2d');
         if (ctx) {
@@ -390,18 +381,31 @@ export default function App() {
       }
 
       framesRendered += 1;
+      const now = performance.now();
       if (now - fpsTimer >= 1000) {
         const currentFps = Math.min(60, Math.round((framesRendered * 1000) / (now - fpsTimer)));
         setTelemetry((prev) => ({ ...prev, fps: currentFps }));
         framesRendered = 0;
         fpsTimer = now;
       }
-
-      animId = requestAnimationFrame(loop);
     };
 
-    animId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(animId);
+    const workerCode = `
+      const intervalMs = 1000 / 60.0988;
+      setInterval(() => postMessage('tick'), intervalMs);
+    `;
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const workerUrl = URL.createObjectURL(blob);
+    const worker = new Worker(workerUrl);
+
+    worker.onmessage = () => {
+      stepEmulatorTick();
+    };
+
+    return () => {
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+    };
   }, [paused, coreMode, speedMultiplier, pollNesControllers]);
 
   // Poll open rooms list
@@ -466,28 +470,24 @@ export default function App() {
   const handleGive30Lives = (toggleLock: boolean) => {
     if (!nesCoordinatorRef.current) return;
     nesCoordinatorRef.current.nesCore.audio.start();
-    nesCoordinatorRef.current.nesCore.activate30LivesCheat(toggleLock);
-    setLock30Lives(nesCoordinatorRef.current.nesCore.lock30Lives);
-
-    if (nesCoordinatorRef.current.telemetry.peerConnected) {
-      nesCoordinatorRef.current.syncExactSaveStateToPeer();
+    if (toggleLock) {
+      const nextLock = !lock30Lives;
+      setLock30Lives(nextLock);
+      nesCoordinatorRef.current.queueCheatCommand(nextLock ? 'LOCK_30_ON' : 'LOCK_30_OFF');
+      setStatusToast(
+        `Infinite 30-Lives RAM Lock ${nextLock ? 'ENABLED' : 'DISABLED'} on both peers!`
+      );
+    } else {
+      nesCoordinatorRef.current.queueCheatCommand('GIVE_30_LIVES');
+      setStatusToast(
+        'Injected 30 Lives directly into NES RAM ($0032 & $0033) for both Player 1 & Player 2 on the exact same frame!'
+      );
     }
-
-    setStatusToast(
-      toggleLock
-        ? `Infinite 30-Lives RAM Lock ${
-            nesCoordinatorRef.current.nesCore.lock30Lives ? 'ENABLED' : 'DISABLED'
-          } ($0032 & $0033 = 30 Lives for P1 & P2, no Start pause!).`
-        : 'Injected 30 Lives directly into NES RAM ($0032 & $0033) for both Player 1 & Player 2 without pausing!'
-    );
   };
 
   const handleInjectContraWeapon = (weapon: ContraWeaponCode) => {
     if (coreMode === 'NES_ROM' && nesCoordinatorRef.current) {
-      nesCoordinatorRef.current.nesCore.injectContraWeapon(weapon);
-      if (nesCoordinatorRef.current.telemetry.peerConnected) {
-        nesCoordinatorRef.current.syncExactSaveStateToPeer();
-      }
+      nesCoordinatorRef.current.queueWeaponCheat(weapon);
       setStatusToast(
         `Injected Weapon [${weapon}] + Rapid Fire directly into NES RAM ($00AA / $00AB) for P1 & P2!`
       );

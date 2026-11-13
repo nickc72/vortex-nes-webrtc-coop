@@ -87,20 +87,43 @@ Open **`http://localhost:3000`** in Chrome, Edge, Brave, or Firefox, and drag-an
 
 ---
 
-## Playing Multiplayer Co-Op with a Friend
+## Playing Multiplayer Co-Op with a Friend (Step-by-Step)
 
-### Option A: Same Wi-Fi / Home LAN (`< 2ms` Latency)
-The Express + WebSocket server binds to `0.0.0.0:3000`.
-1. Find your computer's local IP address (`ipconfig` on Windows, `ifconfig` or `ip a` on macOS/Linux — e.g., `192.168.1.25`).
-2. Have your friend open `http://192.168.1.25:3000` in their browser.
-3. Upload `Contra.nes` on your machine, click **Create P2P Room**, and give your friend the 6-character room code. Your browser will automatically transfer the ROM to theirs!
+> **Important:** Your friend (Player 2) does **NOT** need to install Node.js, download this repository, or even have the `Contra.nes` file on their computer! Only **YOU (the Host / Player 1)** run the server and upload the ROM.
 
-### Option B: Over the Internet from Your Local Machine
-Keep `npm run dev` running in your first terminal, and in a second terminal expose port `3000` using a free Cloudflare Tunnel:
-```bash
-npx cloudflared tunnel --url http://localhost:3000
-```
-Send your friend the generated `https://....trycloudflare.com` URL and your 6-character room code. Both WebSocket signaling and WebRTC peer-to-peer DataChannels work automatically through the tunnel.
+### Option A: Playing Over the Internet (Cloudflare Tunnel)
+
+1. **Host (You) — Terminal #1 (Start the Game Server):**
+   ```bash
+   npm run dev
+   ```
+   Open **`http://localhost:3000`** in your browser, upload your `Contra.nes` file, go to the **WebRTC Co-Op** tab, and click **Create P2P Room**. Note your 6-character Room Code.
+
+2. **Host (You) — Terminal #2 (Start Cloudflare Tunnel):**
+   - **Windows (Recommended — Do NOT use `npx cloudflared` as the npm wrapper hangs on Windows):**
+     Install the official Cloudflare binary once via `winget`, then run `cloudflared` directly (open a new Command Prompt after installing so `PATH` refreshes):
+     ```powershell
+     winget install --id Cloudflare.cloudflared
+     cloudflared tunnel --url http://localhost:3000
+     ```
+   - **macOS / Linux:**
+     ```bash
+     brew install cloudflared
+     cloudflared tunnel --url http://localhost:3000
+     ```
+   - Copy the generated **`https://xxxx-xxxx-xxxx.trycloudflare.com`** link shown in the terminal. *(Note: `server.allowedHosts: true` is pre-configured in both `vite.config.ts` and `server.ts`, so Vite will never block `.trycloudflare.com` URLs).*
+
+3. **Friend (Player 2) — In Their Browser:**
+   - Your friend simply opens your **`https://xxxx-xxxx-xxxx.trycloudflare.com`** link in Chrome, Edge, or Brave.
+   - In the **WebRTC Co-Op** panel on the right, they click **Join** next to your open room (or type your 6-character Room Code and click **Join as 2P**).
+   - Your browser automatically transfers `Contra.nes` to their emulator, and both of you are immediately connected as **Controller 1** (You) and **Controller 2** (Your Friend) at 60fps!
+
+---
+
+### Option B: Playing on the Same Wi-Fi / Home LAN (`< 2ms` Latency)
+If your friend is on the same Wi-Fi network, you don't even need `cloudflared`:
+1. Find your computer's local IPv4 address (`ipconfig` on Windows, `ifconfig` or `ip a` on macOS/Linux — e.g., `192.168.1.25`).
+2. Have your friend open **`http://192.168.1.25:3000`** in their browser and join your 6-character Room Code.
 
 ---
 

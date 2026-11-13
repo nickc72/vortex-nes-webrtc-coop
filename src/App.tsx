@@ -1602,69 +1602,90 @@ export default function App() {
           </div>
         </section>
 
-        {/* How to Run Locally When Downloaded Section */}
+        {/* Step-by-Step Online & Local Multiplayer Guide Section */}
         <section
           id="local-setup"
           className="bg-[#151C28] border border-[#263248] rounded-xl p-6 space-y-5"
         >
-          <div className="flex items-center gap-2 text-xs font-mono text-[#F59E0B]">
-            <Terminal className="w-4 h-4" />
-            <span>LOCAL DOWNLOAD &amp; MULTIPLAYER HOSTING GUIDE</span>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-mono text-[#F59E0B]">
+              <Terminal className="w-4 h-4" />
+              <span>COMPLETE ONLINE &amp; LAN MULTIPLAYER GUIDE (HOST VS. FRIEND)</span>
+            </div>
+            <span className="text-xs font-mono text-[#10B981]">
+              server.allowedHosts = true (Cloudflare Tunnel Ready)
+            </span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-[#0B0F17] border border-[#263248] rounded-lg p-4 space-y-2">
-              <div className="text-xs font-mono text-[#38BDF8]">STEP 1 · INSTALL &amp; START</div>
+            <div className="bg-[#0B0F17] border border-[#263248] rounded-lg p-4 space-y-2.5">
+              <div className="text-xs font-mono text-[#38BDF8]">
+                1. ONLY YOU (HOST) INSTALL THE PROJECT
+              </div>
               <h3 className="text-base font-bold font-display text-[#F1F5F9]">
-                Run on Your Computer (Node.js 18+)
+                Your Friend Does NOT Install Anything!
               </h3>
               <p className="text-xs text-[#94A3B8] leading-relaxed">
-                Unzip the downloaded project folder, open a terminal inside it, and run:
+                Only <strong className="text-[#F1F5F9]">Player 1 (You)</strong> needs Node.js, the
+                code, and the <code className="font-mono text-[#E2E8F0]">Contra.nes</code> file. In
+                Terminal #1 on your PC, start the game server:
               </p>
               <pre className="p-2.5 rounded bg-[#151C28] border border-[#263248] text-xs font-mono text-[#10B981] overflow-x-auto">
                 {`npm install\nnpm run dev`}
               </pre>
               <p className="text-xs text-[#94A3B8]">
-                Then open <code className="font-mono text-[#E2E8F0]">http://localhost:3000</code> in
-                Chrome, Edge, or Brave.
+                Open <code className="font-mono text-[#E2E8F0]">http://localhost:3000</code>, upload{' '}
+                <code className="font-mono text-[#E2E8F0]">Contra.nes</code>, and click{' '}
+                <strong className="text-[#F59E0B]">Create P2P Room</strong> to get your 6-letter
+                Room Code.
               </p>
             </div>
 
-            <div className="bg-[#0B0F17] border border-[#263248] rounded-lg p-4 space-y-2">
-              <div className="text-xs font-mono text-[#F59E0B]">STEP 2 · SAME WI-FI / LAN CO-OP</div>
+            <div className="bg-[#0B0F17] border border-[#263248] rounded-lg p-4 space-y-2.5">
+              <div className="text-xs font-mono text-[#F59E0B]">
+                2. START CLOUDFLARE TUNNEL (WINDOWS / MAC)
+              </div>
               <h3 className="text-base font-bold font-display text-[#F1F5F9]">
-                Play with a Friend on Home Wi-Fi / LAN
+                Expose Your Local Server Over the Internet
               </h3>
               <p className="text-xs text-[#94A3B8] leading-relaxed">
-                The server binds to <code className="font-mono text-[#E2E8F0]">0.0.0.0:3000</code>.
-                Find your computer&apos;s local IP (<code className="font-mono">ipconfig</code> on
-                Windows or <code className="font-mono">ifconfig</code> on Mac/Linux) and have your
-                friend open:
+                Do <strong className="text-[#F43F5E]">not</strong> use <code className="font-mono">npx cloudflared</code>{' '}
+                on Windows (it hangs while downloading). Instead, install the native binary once and
+                run <code className="font-mono text-[#E2E8F0]">cloudflared</code> directly in
+                Terminal #2:
               </p>
               <pre className="p-2.5 rounded bg-[#151C28] border border-[#263248] text-xs font-mono text-[#F59E0B] overflow-x-auto">
-                {`http://192.168.1.XX:3000`}
+                {`winget install --id Cloudflare.cloudflared\ncloudflared tunnel --url http://localhost:3000`}
               </pre>
               <p className="text-xs text-[#94A3B8]">
-                Create a room, share the 6-character code, and play with &lt;2ms LAN latency!
+                Copy the <code className="font-mono text-[#38BDF8]">https://...trycloudflare.com</code>{' '}
+                URL printed in the terminal box.
               </p>
             </div>
 
-            <div className="bg-[#0B0F17] border border-[#263248] rounded-lg p-4 space-y-2">
-              <div className="text-xs font-mono text-[#10B981]">STEP 3 · INTERNET CO-OP TUNNEL</div>
+            <div className="bg-[#0B0F17] border border-[#263248] rounded-lg p-4 space-y-2.5">
+              <div className="text-xs font-mono text-[#10B981]">
+                3. WHAT YOUR FRIEND (PLAYER 2) DOES
+              </div>
               <h3 className="text-base font-bold font-display text-[#F1F5F9]">
-                Play Over the Internet from Localhost
+                Open Link → Enter Room Code → Play!
               </h3>
-              <p className="text-xs text-[#94A3B8] leading-relaxed">
-                To invite a friend in another city while running locally, expose port 3000 with a
-                free Cloudflare Tunnel in a second terminal:
-              </p>
-              <pre className="p-2.5 rounded bg-[#151C28] border border-[#263248] text-xs font-mono text-[#38BDF8] overflow-x-auto">
-                {`npx cloudflared tunnel --url http://localhost:3000`}
-              </pre>
-              <p className="text-xs text-[#94A3B8]">
-                Send your friend the generated <code className="font-mono">https://...trycloudflare.com</code>{' '}
-                link—WebSocket signaling and WebRTC P2P work automatically!
-              </p>
+              <ol className="text-xs text-[#94A3B8] space-y-1.5 list-decimal list-inside leading-relaxed">
+                <li>
+                  Your friend simply opens your{' '}
+                  <code className="font-mono text-[#38BDF8]">https://...trycloudflare.com</code>{' '}
+                  link in Chrome or Edge (no install, no ROM file needed!).
+                </li>
+                <li>
+                  In the <strong className="text-[#F59E0B]">WebRTC Co-Op</strong> tab on the right,
+                  they click your open room (or type your 6-character code) and click{' '}
+                  <strong className="text-[#38BDF8]">Join as 2P</strong>.
+                </li>
+                <li>
+                  Your browser automatically beams <code className="font-mono">Contra.nes</code> to
+                  theirs and locks both controllers at 60fps!
+                </li>
+              </ol>
             </div>
           </div>
         </section>

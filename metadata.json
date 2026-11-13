@@ -1,0 +1,6 @@
+{
+  "name": "VORTEX-16: WebRTC Rollback Fantasy Console",
+  "description": "A 60fps browser-based fantasy console emulator and peer-to-peer WebRTC Rollback Netcode co-op run-and-gun platform featuring Operation: Iron Viper.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

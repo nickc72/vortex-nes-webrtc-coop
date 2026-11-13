@@ -1,0 +1,143 @@
+import { CartridgeDefinition } from './types';
+
+export const BUILTIN_CARTRIDGES: CartridgeDefinition[] = [
+  {
+    id: 'iron-viper-stage1',
+    title: 'OPERATION: IRON VIPER',
+    subtitle: 'Sector 01 · Galuga Jungle Garrison',
+    author: 'VORTEX-16 Studio',
+    version: '1.4.0',
+    description:
+      'Classic 60fps co-op run-and-gun assault through multi-tiered jungle bridges, sniper bunkers, flying weapon capsules, and the twin-phase Goliath Defense Core.',
+    levelLength: 3200,
+    gravity: 0.42,
+    playerSpeed: 2.8,
+    jumpForce: -8.2,
+    startingLives: 5,
+    startingWeapon: 'RIFLE',
+    palette: {
+      skyTop: '#070B14',
+      skyBottom: '#132038',
+      distantMountains: '#1B2D48',
+      foliageOrWall: '#14532D',
+      accentGlow: '#F59E0B',
+    },
+    platforms: [
+      // Ground & Jungle Floor sections
+      { id: 1, x: 0, y: 300, width: 620, height: 60, oneWay: false, style: 'JUNGLE_GRASS' },
+      // Elevated Jungle Ledges
+      { id: 2, x: 180, y: 235, width: 170, height: 14, oneWay: true, style: 'JUNGLE_GRASS' },
+      { id: 3, x: 390, y: 180, width: 180, height: 14, oneWay: true, style: 'JUNGLE_GRASS' },
+      // Suspension Bridge over water hazard
+      { id: 4, x: 620, y: 335, width: 320, height: 25, oneWay: false, style: 'WATER_HAZARD' },
+      { id: 5, x: 610, y: 255, width: 340, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+      { id: 6, x: 710, y: 190, width: 150, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+      // Mid-Stage Outpost & Bunkers
+      { id: 7, x: 940, y: 300, width: 760, height: 60, oneWay: false, style: 'JUNGLE_GRASS' },
+      { id: 8, x: 1020, y: 235, width: 200, height: 14, oneWay: true, style: 'BUNKER_METAL' },
+      { id: 9, x: 1270, y: 185, width: 210, height: 14, oneWay: true, style: 'BUNKER_METAL' },
+      { id: 10, x: 1490, y: 240, width: 180, height: 14, oneWay: true, style: 'JUNGLE_GRASS' },
+      // Canyon Bridge 2
+      { id: 11, x: 1700, y: 335, width: 300, height: 25, oneWay: false, style: 'WATER_HAZARD' },
+      { id: 12, x: 1690, y: 245, width: 320, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+      { id: 13, x: 1790, y: 175, width: 160, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+      // Final Base Approach & Boss Arena
+      { id: 14, x: 2000, y: 300, width: 1250, height: 60, oneWay: false, style: 'BUNKER_METAL' },
+      { id: 15, x: 2100, y: 230, width: 190, height: 14, oneWay: true, style: 'BUNKER_METAL' },
+      { id: 16, x: 2340, y: 175, width: 200, height: 14, oneWay: true, style: 'BUNKER_METAL' },
+      // Boss Arena Tactical Platforms
+      { id: 17, x: 2640, y: 235, width: 140, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+      { id: 18, x: 2790, y: 175, width: 130, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+    ],
+    spawns: [
+      // Wave 1: Initial scouts + Spread Gun capsule
+      { triggerX: 0, x: 460, y: 268, type: 'RUNNER' },
+      { triggerX: 0, x: 540, y: 268, type: 'RUNNER' },
+      { triggerX: 20, x: 260, y: 203, type: 'SNIPER' },
+      { triggerX: 40, x: 80, y: 110, type: 'CAPSULE', dropWeapon: 'SPREAD' },
+      { triggerX: 140, x: 480, y: 152, type: 'TURRET' },
+      // Wave 2: Bridge ambush
+      { triggerX: 350, x: 740, y: 223, type: 'RUNNER' },
+      { triggerX: 380, x: 820, y: 162, type: 'TURRET' },
+      { triggerX: 420, x: 420, y: 100, type: 'CAPSULE', dropWeapon: 'LASER' },
+      { triggerX: 520, x: 910, y: 223, type: 'SNIPER' },
+      // Wave 3: Mid-stage bunker defense
+      { triggerX: 740, x: 1120, y: 207, type: 'TURRET' },
+      { triggerX: 780, x: 1180, y: 268, type: 'RUNNER' },
+      { triggerX: 830, x: 1350, y: 153, type: 'SNIPER' },
+      { triggerX: 860, x: 860, y: 95, type: 'CAPSULE', dropWeapon: 'RAPID' },
+      { triggerX: 960, x: 1450, y: 260, type: 'MECH_WALKER' },
+      { triggerX: 1100, x: 1590, y: 212, type: 'TURRET' },
+      // Wave 4: Second bridge & heavy armor
+      { triggerX: 1380, x: 1780, y: 213, type: 'RUNNER' },
+      { triggerX: 1420, x: 1860, y: 147, type: 'TURRET' },
+      { triggerX: 1480, x: 1480, y: 105, type: 'CAPSULE', dropWeapon: 'CRUSH' },
+      { triggerX: 1650, x: 2120, y: 260, type: 'MECH_WALKER' },
+      { triggerX: 1780, x: 2220, y: 202, type: 'TURRET' },
+      { triggerX: 1900, x: 2420, y: 147, type: 'SNIPER' },
+      { triggerX: 1960, x: 1960, y: 105, type: 'CAPSULE', dropWeapon: 'SPREAD' },
+      { triggerX: 2080, x: 2500, y: 260, type: 'MECH_WALKER' },
+    ],
+    bossConfig: {
+      triggerX: 2480,
+      x: 3040,
+      y: 195,
+      name: 'GOLIATH MK-IV DEFENSE CORE',
+      maxHp: 220,
+      phases: 3,
+    },
+  },
+  {
+    id: 'cyber-fortress-boss-rush',
+    title: 'CYBER FORTRESS: REDLINE',
+    subtitle: 'Sector 02 · High-Velocity Mech Foundry',
+    author: 'VORTEX-16 Studio',
+    version: '1.2.0',
+    description:
+      'High-intensity industrial gauntlet starting with Spread Guns, low-gravity jump thrusters, dense turret grids, and an armored Overlord Core.',
+    levelLength: 2200,
+    gravity: 0.36,
+    playerSpeed: 3.1,
+    jumpForce: -8.6,
+    startingLives: 7,
+    startingWeapon: 'SPREAD',
+    palette: {
+      skyTop: '#090614',
+      skyBottom: '#1F1135',
+      distantMountains: '#2E1A47',
+      foliageOrWall: '#334155',
+      accentGlow: '#38BDF8',
+    },
+    platforms: [
+      { id: 1, x: 0, y: 300, width: 2250, height: 60, oneWay: false, style: 'BUNKER_METAL' },
+      { id: 2, x: 150, y: 230, width: 220, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+      { id: 3, x: 420, y: 170, width: 220, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+      { id: 4, x: 700, y: 230, width: 240, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+      { id: 5, x: 1020, y: 180, width: 260, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+      { id: 6, x: 1360, y: 235, width: 220, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+      { id: 7, x: 1660, y: 225, width: 160, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+      { id: 8, x: 1840, y: 165, width: 150, height: 14, oneWay: true, style: 'STEEL_BRIDGE' },
+    ],
+    spawns: [
+      { triggerX: 0, x: 340, y: 202, type: 'TURRET' },
+      { triggerX: 0, x: 520, y: 260, type: 'MECH_WALKER' },
+      { triggerX: 60, x: 100, y: 100, type: 'CAPSULE', dropWeapon: 'LASER' },
+      { triggerX: 280, x: 610, y: 142, type: 'TURRET' },
+      { triggerX: 460, x: 840, y: 202, type: 'TURRET' },
+      { triggerX: 520, x: 960, y: 260, type: 'MECH_WALKER' },
+      { triggerX: 700, x: 700, y: 95, type: 'CAPSULE', dropWeapon: 'CRUSH' },
+      { triggerX: 820, x: 1160, y: 152, type: 'TURRET' },
+      { triggerX: 980, x: 1300, y: 260, type: 'MECH_WALKER' },
+      { triggerX: 1120, x: 1460, y: 207, type: 'TURRET' },
+      { triggerX: 1160, x: 1160, y: 105, type: 'CAPSULE', dropWeapon: 'SPREAD' },
+    ],
+    bossConfig: {
+      triggerX: 1480,
+      x: 2040,
+      y: 195,
+      name: 'AEGIS-OMEGA REACTOR CORE',
+      maxHp: 280,
+      phases: 3,
+    },
+  },
+];
